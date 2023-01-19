@@ -5,9 +5,9 @@ use derive_try_from_primitive::TryFromPrimitive;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take},
-    combinator::map,
+    combinator::{map, verify},
     error::context,
-    number::complete::{le_u16, le_u64},
+    number::complete::{le_u16, le_u32, le_u64},
     sequence::tuple,
     Offset,
 };
@@ -99,6 +99,7 @@ impl File {
         ))(i)?;
 
         let (i, (r#type, machine)) = tuple((Type::parse, Machine::parse))(i)?;
+        let (i, _) = context("Version (bits)", verify(le_u32, |&x| x == 1))(i)?;
         let (i, entry_point) = Addr::parse(i)?;
 
         Ok((
