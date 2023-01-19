@@ -1,22 +1,57 @@
 use std::fmt;
 
+use derive_more::{Add, Sub};
 use derive_try_from_primitive::TryFromPrimitive;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take},
     combinator::map,
     error::context,
-    number::complete::le_u16,
+    number::complete::{le_u16, le_u64},
     sequence::tuple,
     Offset,
 };
 
 mod parse;
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Add, Sub)]
+pub struct Addr(pub u64);
+
+impl Addr {
+    pub fn parse(i: parse::Input) -> parse::Result<Self> {
+        map(le_u64, From::from)(i)
+    }
+}
+
+impl From<u64> for Addr {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl Into<u64> for Addr {
+    fn into(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Debug for Addr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:08x}", self.0)
+    }
+}
+
+impl fmt::Display for Addr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
 #[derive(Debug)]
 pub struct File {
     pub r#type: Type,
     pub machine: Machine,
+    pub entry_point: Addr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
@@ -35,6 +70,9 @@ pub enum Machine {
     X86 = 0x03,
     X86_64 = 0x3e,
 }
+
+impl_parse_for_enum!(Type, le_u16);
+impl_parse_for_enum!(Machine, le_u16);
 
 pub struct HexDump<'a>(&'a [u8]);
 
@@ -60,12 +98,17 @@ impl File {
             context("Padding", take(8_usize)),
         ))(i)?;
 
-        let (i, (r#type, machine)) = tuple((
-            context("Type", map(le_u16, |x| Type::try_from(x).unwrap())),
-            context("Machine", map(le_u16, |x| Machine::try_from(x).unwrap())),
-        ))(i)?;
+        let (i, (r#type, machine)) = tuple((Type::parse, Machine::parse))(i)?;
+        let (i, entry_point) = Addr::parse(i)?;
 
-        Ok((i, Self { machine, r#type }))
+        Ok((
+            i,
+            Self {
+                machine,
+                r#type,
+                entry_point,
+            },
+        ))
     }
 
     pub fn parse_or_print_error(i: parse::Input) -> Option<Self> {
