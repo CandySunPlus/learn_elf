@@ -1,4 +1,6 @@
 ; in `hello.asm`
+; nasm -f elf64 hello.asm
+; mold hello.o -o hello
 
         global _start
 
