@@ -214,7 +214,6 @@ impl File {
         let ph_slices = (&full_input[ph_offset.into()..]).chunks(ph_entsize);
         let mut program_headers = Vec::new();
         for ph_slice in ph_slices.take(ph_count) {
-            println!("{:?}\n", ph_slice);
             let (_, ph) = ProgramHeader::parse(full_input, ph_slice)?;
             program_headers.push(ph);
         }

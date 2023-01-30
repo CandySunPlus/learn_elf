@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     println!("Disassembling {:?}...", input_path);
-    let code = &input[0x210..];
+    let code = &input[0x1000..];
     let code = &code[..std::cmp::min(0x25, code.len())];
     ndisasm(code)?;
 
