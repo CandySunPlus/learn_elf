@@ -6,6 +6,8 @@ use std::{
     process::{Command, Stdio},
 };
 
+use region::{protect, Protection};
+
 fn main() -> Result<(), Box<dyn Error>> {
     let input_path = env::args().nth(1).expect("usage: elk FILE");
     let input = fs::read(&input_path)?;
@@ -34,13 +36,21 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     ndisasm(&code_ph.data[..], file.entry_point)?;
 
-    // println!("Excuting {:?} in memory...", input_path);
-    // let entry_point = code.as_ptr();
-    // println!("Entry point: {:?}", entry_point);
+    println!("Excuting {:?} in memory...", input_path);
+    let code = &code_ph.data;
+    unsafe {
+        protect(code.as_ptr(), code.len(), Protection::READ_WRITE_EXECUTE)?;
+    }
+    let entry_offset = file.entry_point - code_ph.vaddr;
+    let entry_point = unsafe { code.as_ptr().add(entry_offset.into()) };
 
-    // unsafe {
-    //     jmp(entry_point);
-    // }
+    println!("          code @ {:?}", code.as_ptr());
+    println!("  entry offset @ {:?}", entry_offset);
+    println!("   entry point @ {:?}", entry_point);
+
+    unsafe {
+        jmp(entry_point);
+    }
 
     Ok(())
 }
