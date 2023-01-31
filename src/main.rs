@@ -6,6 +6,7 @@ use std::{
     process::{Command, Stdio},
 };
 
+use mmap::{MapOption, MemoryMap};
 use region::{protect, Protection};
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -36,22 +37,48 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     ndisasm(&code_ph.data[..], file.entry_point)?;
 
-    println!("Excuting {:?} in memory...", input_path);
-    let code = &code_ph.data;
-    pause("protect")?;
-    unsafe {
-        protect(code.as_ptr(), code.len(), Protection::READ_WRITE_EXECUTE)?;
+    println!("Mapping {:?} in memory...", input_path);
+
+    let mut mappings = Vec::new();
+
+    for ph in file
+        .program_headers
+        .iter()
+        .filter(|ph| ph.r#type == delf::SegmentType::Load)
+    {
+        println!("Mapping segment @ {:?} with {:?}", ph.mem_range(), ph.flags);
+        let mem_range = ph.mem_range();
+        let len: usize = (mem_range.end - mem_range.start).into();
+        let addr = mem_range.start.0 as *mut u8;
+        let map = MemoryMap::new(len, &[MapOption::MapWritable, MapOption::MapAddr(addr)])?;
+        println!("Copying segment data...");
+        {
+            let dst = unsafe { std::slice::from_raw_parts_mut(addr, ph.data.len()) };
+            dst.copy_from_slice(&ph.data[..]);
+        }
+        println!("Adjusting permissions...");
+        let mut protection = Protection::NONE;
+
+        for flag in ph.flags.iter() {
+            protection |= match flag {
+                delf::SegmentFlag::Read => Protection::READ,
+                delf::SegmentFlag::Write => Protection::WRITE,
+                delf::SegmentFlag::Execute => Protection::EXECUTE,
+            }
+        }
+
+        unsafe {
+            protect(addr, len, protection)?;
+        }
+
+        mappings.push(map);
     }
-    let entry_offset = file.entry_point - code_ph.vaddr;
-    let entry_point = unsafe { code.as_ptr().add(entry_offset.into()) };
 
-    println!("          code @ {:?}", code.as_ptr());
-    println!("  entry offset @ {:?}", entry_offset);
-    println!("   entry point @ {:?}", entry_point);
-
+    println!("Jumping to entry point @ {:?}...", file.entry_point);
     pause("jmp")?;
+
     unsafe {
-        jmp(entry_point);
+        jmp(file.entry_point.0 as _);
     }
 
     Ok(())
