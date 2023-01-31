@@ -8,12 +8,25 @@ use nom::{
     bytes::complete::{tag, take},
     combinator::{map, verify},
     error::context,
+    multi::{many0, many_till},
     number::complete::{le_u16, le_u32, le_u64},
     sequence::tuple,
     Offset,
 };
 
 mod parse;
+
+#[derive(thiserror::Error, Debug)]
+pub enum ReadRelaError {
+    #[error("Rela dynamic entry not found")]
+    RelaNotFound,
+    #[error("RelaSz dynamic entry not found")]
+    RelaSzNotFound,
+    #[error("Rela segment not found")]
+    RelaSegmentNotFound,
+    #[error("Parsing error")]
+    ParsingError(nom::error::VerboseErrorKind),
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Add, Sub)]
 pub struct Addr(pub u64);
@@ -64,6 +77,13 @@ impl fmt::Display for Addr {
 pub struct DynamicEntry {
     pub tag: DynamicTag,
     pub addr: Addr,
+}
+
+impl DynamicEntry {
+    fn parse(i: parse::Input) -> parse::Result<Self> {
+        let (i, (tag, addr)) = tuple((DynamicTag::parse, Addr::parse))(i)?;
+        Ok((i, Self { tag, addr }))
+    }
 }
 
 #[derive(Debug)]
@@ -172,10 +192,14 @@ pub enum DynamicTag {
     FiniArray,
     InitArraySz,
     FiniArraySz,
+    Flags = 0x1e,
     LoOs = 0x60000000,
     HiOs = 0x6fffffff,
     LoProc = 0x70000000,
     HiProc = 0x7fffffff,
+    GnuHash = 0x6ffffef5,
+    Flags1 = 0x6ffffffb,
+    RelACount = 0x6ffffff9,
 }
 
 impl_parse_for_enum!(Type, le_u16);
@@ -183,6 +207,28 @@ impl_parse_for_enum!(Machine, le_u16);
 impl_parse_for_enum!(SegmentType, le_u32);
 impl_parse_for_enum!(DynamicTag, le_u64);
 impl_parse_for_enumflags!(SegmentFlag, le_u32);
+
+#[derive(Debug)]
+pub struct Rela {
+    pub offset: Addr,
+    pub r#type: u32,
+    pub sym: u32,
+    pub addend: Addr,
+}
+
+impl Rela {
+    fn parse(i: parse::Input) -> parse::Result<Self> {
+        map(
+            tuple((Addr::parse, le_u32, le_u32, Addr::parse)),
+            |(offset, r#type, sym, addend)| Rela {
+                offset,
+                r#type,
+                sym,
+                addend,
+            },
+        )(i)
+    }
+}
 
 pub struct HexDump<'a>(&'a [u8]);
 
@@ -204,7 +250,7 @@ impl ProgramHeader {
         self.vaddr..self.vaddr + self.memsz
     }
 
-    fn parse<'a>(full_input: parse::Input<'_>, i: parse::Input<'a>) -> parse::Result<'a, Self> {
+    fn parse<'a>(full_input: parse::Input<'a>, i: parse::Input<'a>) -> parse::Result<'a, Self> {
         let (i, (r#type, flags)) = tuple((SegmentType::parse, SegmentFlag::parse))(i)?;
         let (i, (offset, vaddr, paddr, filesz, memsz, align)) = tuple((
             Addr::parse,
@@ -214,6 +260,18 @@ impl ProgramHeader {
             Addr::parse,
             Addr::parse,
         ))(i)?;
+
+        let slice = &full_input[offset.into()..][..filesz.into()];
+        let (_, contents) = match r#type {
+            SegmentType::Dynamic => map(
+                many_till(
+                    DynamicEntry::parse,
+                    verify(DynamicEntry::parse, |e| e.tag == DynamicTag::Null),
+                ),
+                |(entries, _last)| SegmentContents::Dynamic(entries),
+            )(slice)?,
+            _ => (slice, SegmentContents::Unknown),
+        };
 
         Ok((
             i,
@@ -227,6 +285,7 @@ impl ProgramHeader {
                 memsz,
                 align,
                 data: full_input[offset.into()..][..filesz.into()].to_vec(),
+                contents,
             },
         ))
     }
@@ -304,6 +363,29 @@ impl File {
         ))
     }
 
+    pub fn read_rela_entries(&self) -> Result<Vec<Rela>, ReadRelaError> {
+        let addr = self
+            .dynamic_entry(DynamicTag::Rela)
+            .ok_or(ReadRelaError::RelaNotFound)?;
+        let len = self
+            .dynamic_entry(DynamicTag::RelaSz)
+            .ok_or(ReadRelaError::RelaSzNotFound)?;
+        let seg = self
+            .segment_at(addr)
+            .ok_or(ReadRelaError::RelaSegmentNotFound)?;
+
+        let i = &seg.data[(addr - seg.mem_range().start).into()..][..len.into()];
+
+        match many0(Rela::parse)(i) {
+            Ok((_, rela_entries)) => Ok(rela_entries),
+            Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
+                let (_input, error_kind) = &err.errors[0];
+                Err(ReadRelaError::ParsingError(error_kind.clone()))
+            }
+            _ => unreachable!(),
+        }
+    }
+
     pub fn parse_or_print_error(i: parse::Input) -> Option<Self> {
         match Self::parse(i) {
             Ok((_, file)) => Some(file),
@@ -317,6 +399,27 @@ impl File {
                 None
             }
             Err(_) => panic!("unexcpeted nom error"),
+        }
+    }
+
+    pub fn segment_at(&self, addr: Addr) -> Option<&ProgramHeader> {
+        self.program_headers
+            .iter()
+            .filter(|ph| ph.r#type == SegmentType::Load)
+            .find(|ph| ph.mem_range().contains(&addr))
+    }
+
+    pub fn segment_of_type(&self, r#type: SegmentType) -> Option<&ProgramHeader> {
+        self.program_headers.iter().find(|ph| ph.r#type == r#type)
+    }
+
+    pub fn dynamic_entry(&self, tag: DynamicTag) -> Option<Addr> {
+        match self.segment_of_type(SegmentType::Dynamic) {
+            Some(ProgramHeader {
+                contents: SegmentContents::Dynamic(entries),
+                ..
+            }) => entries.iter().find(|e| e.tag == tag).map(|e| e.addr),
+            _ => None,
         }
     }
 }
