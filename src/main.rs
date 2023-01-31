@@ -38,6 +38,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Excuting {:?} in memory...", input_path);
     let code = &code_ph.data;
+    pause("protect")?;
     unsafe {
         protect(code.as_ptr(), code.len(), Protection::READ_WRITE_EXECUTE)?;
     }
@@ -48,10 +49,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("  entry offset @ {:?}", entry_offset);
     println!("   entry point @ {:?}", entry_point);
 
+    pause("jmp")?;
     unsafe {
         jmp(entry_point);
     }
 
+    Ok(())
+}
+
+fn pause(reason: &str) -> Result<(), Box<dyn Error>> {
+    println!("Press enter to {}...", reason);
+    {
+        let mut s = String::new();
+        std::io::stdin().read_line(&mut s)?;
+    }
     Ok(())
 }
 
