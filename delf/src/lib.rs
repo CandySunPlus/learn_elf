@@ -60,6 +60,18 @@ impl fmt::Display for Addr {
     }
 }
 
+#[derive(Debug)]
+pub struct DynamicEntry {
+    pub tag: DynamicTag,
+    pub addr: Addr,
+}
+
+#[derive(Debug)]
+pub enum SegmentContents {
+    Dynamic(Vec<DynamicEntry>),
+    Unknown,
+}
+
 pub struct ProgramHeader {
     pub r#type: SegmentType,
     pub flags: BitFlags<SegmentFlag>,
@@ -70,6 +82,7 @@ pub struct ProgramHeader {
     pub memsz: Addr,
     pub align: Addr,
     pub data: Vec<u8>,
+    pub contents: SegmentContents,
 }
 
 #[derive(Debug)]
@@ -127,9 +140,48 @@ pub enum SegmentFlag {
     Read = 0x4,
 }
 
+#[derive(Debug, TryFromPrimitive, PartialEq, Eq)]
+#[repr(u64)]
+pub enum DynamicTag {
+    Null,
+    Needed,
+    PltRelSz,
+    PltGot,
+    Hash,
+    StrTab,
+    SymTab,
+    Rela,
+    RelaSz,
+    RelaEnt,
+    StrSz,
+    SymEnt,
+    Init,
+    Fini,
+    SoName,
+    RPath,
+    Symbolic,
+    Rel,
+    RelSz,
+    RelEnt,
+    PltRel,
+    Debug,
+    TextRel,
+    JmpRel,
+    BindNow,
+    InitArray,
+    FiniArray,
+    InitArraySz,
+    FiniArraySz,
+    LoOs = 0x60000000,
+    HiOs = 0x6fffffff,
+    LoProc = 0x70000000,
+    HiProc = 0x7fffffff,
+}
+
 impl_parse_for_enum!(Type, le_u16);
 impl_parse_for_enum!(Machine, le_u16);
 impl_parse_for_enum!(SegmentType, le_u32);
+impl_parse_for_enum!(DynamicTag, le_u64);
 impl_parse_for_enumflags!(SegmentFlag, le_u32);
 
 pub struct HexDump<'a>(&'a [u8]);
