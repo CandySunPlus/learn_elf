@@ -37,31 +37,31 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     ndisasm(&code_ph.data[..], file.entry_point)?;
 
-    println!("Dynamic entries:");
-    if let Some(ds) = file
-        .program_headers
-        .iter()
-        .find(|ph| ph.r#type == delf::SegmentType::Dynamic)
-    {
-        if let delf::SegmentContents::Dynamic(ref table) = ds.contents {
-            for entry in table {
-                println!("- {entry:?}");
-            }
-        }
-    }
+    // println!("Dynamic entries:");
+    // if let Some(ds) = file
+    //     .program_headers
+    //     .iter()
+    //     .find(|ph| ph.r#type == delf::SegmentType::Dynamic)
+    // {
+    //     if let delf::SegmentContents::Dynamic(ref table) = ds.contents {
+    //         for entry in table {
+    //             println!("- {entry:?}");
+    //         }
+    //     }
+    // }
 
-    println!("Rela entries:");
+    // println!("Rela entries:");
+    // for e in &rela_entries {
+    //     println!("{e:#?}");
+    //     if let Some(seg) = file.segment_at(e.offset) {
+    //         println!("... for {seg:#?}");
+    //     }
+    // }
+
     let rela_entries = file.read_rela_entries()?;
-    for e in &rela_entries {
-        println!("{e:#?}");
-        if let Some(seg) = file.segment_at(e.offset) {
-            println!("... for {seg:#?}");
-        }
-    }
-
     let base = 0x400000_usize;
 
-    println!("Mapping {input_path:?} in memory...");
+    println!("Loading with base address @ 0x{base:x}");
 
     let mut mappings = Vec::new();
 
@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .filter(|ph| ph.mem_range().end > ph.mem_range().start);
 
     for ph in phs {
-        println!("Mapping segment @ {:?} with {:?}", ph.mem_range(), ph.flags);
+        println!("Mapping {:?} - {:?}", ph.mem_range(), ph.flags);
         let mem_range = ph.mem_range();
         let len: usize = (mem_range.end - mem_range.start).into();
 
@@ -83,15 +83,44 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         let addr = aligned_start as *mut u8;
 
-        println!("Addr: {addr:p}, Padding: {padding:08x}");
+        if padding > 0 {
+            println!("(With 0x{padding:08x} bytes of padding at the start)");
+        }
 
         let map = MemoryMap::new(len, &[MapOption::MapWritable, MapOption::MapAddr(addr)])?;
-        println!("Copying segment data...");
-        {
-            let dst = unsafe { std::slice::from_raw_parts_mut(addr.add(padding), ph.data.len()) };
-            dst.copy_from_slice(&ph.data[..]);
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(ph.data.as_ptr(), addr.add(padding), len);
         }
-        println!("Adjusting permissions...");
+
+        let mut num_relocs = 0;
+        for reloc in &rela_entries {
+            if mem_range.contains(&reloc.offset) {
+                num_relocs += 1;
+                unsafe {
+                    let real_segment_start = addr.add(padding);
+                    let specified_reloc_offset = reloc.offset;
+                    let specified_segment_start = mem_range.start;
+                    let offset_into_segment = specified_reloc_offset - specified_segment_start;
+                    let reloc_addr = real_segment_start.add(offset_into_segment.into()) as *mut u64;
+
+                    match reloc.r#type {
+                        delf::RelType::Relative => {
+                            let reloc_value = reloc.addend + base.into();
+                            *reloc_addr = reloc_value.0;
+                        }
+                        r#type => {
+                            panic!("Unsupported relocation type {:?}", r#type);
+                        }
+                    }
+                }
+            }
+        }
+
+        if num_relocs > 0 {
+            println!("(Applied {num_relocs} relocations)");
+        }
+
         let mut protection = Protection::NONE;
 
         for flag in ph.flags.iter() {
@@ -110,9 +139,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let new_entry_point = (file.entry_point + base.into()).into();
-    println!("Jumping to entry point @ {new_entry_point:?}...");
 
-    pause("jmp")?;
+    println!("Jumping to entry point @ {new_entry_point:?}...");
 
     unsafe {
         jmp(new_entry_point);
@@ -121,6 +149,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn pause(reason: &str) -> Result<(), Box<dyn Error>> {
     println!("Press enter to {reason}...");
     {

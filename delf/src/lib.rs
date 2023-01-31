@@ -202,16 +202,25 @@ pub enum DynamicTag {
     RelACount = 0x6ffffff9,
 }
 
+#[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum RelType {
+    GlobDat = 6,
+    JumpSlot = 7,
+    Relative = 8,
+}
+
 impl_parse_for_enum!(Type, le_u16);
 impl_parse_for_enum!(Machine, le_u16);
 impl_parse_for_enum!(SegmentType, le_u32);
 impl_parse_for_enum!(DynamicTag, le_u64);
+impl_parse_for_enum!(RelType, le_u32);
 impl_parse_for_enumflags!(SegmentFlag, le_u32);
 
 #[derive(Debug)]
 pub struct Rela {
     pub offset: Addr,
-    pub r#type: u32,
+    pub r#type: RelType,
     pub sym: u32,
     pub addend: Addr,
 }
@@ -219,7 +228,7 @@ pub struct Rela {
 impl Rela {
     fn parse(i: parse::Input) -> parse::Result<Self> {
         map(
-            tuple((Addr::parse, le_u32, le_u32, Addr::parse)),
+            tuple((Addr::parse, RelType::parse, le_u32, Addr::parse)),
             |(offset, r#type, sym, addend)| Rela {
                 offset,
                 r#type,
