@@ -13,21 +13,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     let input_path = env::args().nth(1).expect("usage: elk FILE");
     let input = fs::read(&input_path)?;
 
-    println!("Analyzing {:?}...", input_path);
+    println!("Analyzing {input_path:?}...");
 
     let file = match delf::File::parse_or_print_error(&input[..]) {
         Some(f) => f,
         None => std::process::exit(1),
     };
-    println!("{:#?}", file);
+    println!("{file:#?}");
 
-    println!("Executing {:?}...", input_path);
+    println!("Executing {input_path:?}...");
     let status = Command::new(input_path.as_str()).status()?;
     if !status.success() {
         return Err("process did not exit successfully".into());
     }
 
-    println!("Disassembling {:?}...", input_path);
+    println!("Disassembling {input_path:?}...");
 
     let code_ph = file
         .program_headers
@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     ndisasm(&code_ph.data[..], file.entry_point)?;
 
-    println!("Mapping {:?} in memory...", input_path);
+    println!("Mapping {input_path:?} in memory...");
 
     let mut mappings = Vec::new();
 

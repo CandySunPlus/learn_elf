@@ -93,6 +93,17 @@ pub enum SegmentType {
     Dynamic,
     Interp,
     Note,
+    ShLib,
+    PHdr,
+    TLS,
+    LoOS = 0x6000_0000,
+    HiOS = 0x6FFF_FFFF,
+    LoProc = 0x7000_0000,
+    HiProc = 0x7FFF_FFFF,
+    GnuEhFrame = 0x6474_E550,
+    GnuStack = 0x6474_E551,
+    GnuRelRo = 0x6474_E552,
+    GnuProperty = 0x6474_E553,
 }
 
 #[bitflags]
