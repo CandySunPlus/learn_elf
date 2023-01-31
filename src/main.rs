@@ -85,7 +85,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn pause(reason: &str) -> Result<(), Box<dyn Error>> {
-    println!("Press enter to {}...", reason);
+    println!("Press enter to {reason}...");
     {
         let mut s = String::new();
         std::io::stdin().read_line(&mut s)?;
