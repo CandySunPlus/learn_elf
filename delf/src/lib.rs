@@ -125,7 +125,7 @@ pub struct HexDump<'a>(&'a [u8]);
 impl<'a> fmt::Debug for HexDump<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for &x in self.0.iter().take(20) {
-            write!(f, "{:02x} ", x)?;
+            write!(f, "{x:02x} ")?;
         }
         Ok(())
     }
@@ -222,7 +222,7 @@ impl File {
         let (i, (_sh_entsize, _sh_count, _sh_nidx)) =
             tuple((&u16_usize, &u16_usize, &u16_usize))(i)?;
 
-        let ph_slices = (&full_input[ph_offset.into()..]).chunks(ph_entsize);
+        let ph_slices = full_input[ph_offset.into()..].chunks(ph_entsize);
         let mut program_headers = Vec::new();
         for ph_slice in ph_slices.take(ph_count) {
             let (_, ph) = ProgramHeader::parse(full_input, ph_slice)?;
@@ -247,7 +247,7 @@ impl File {
                 eprintln!("Parsing failed:");
                 for (input, err) in err.errors {
                     let offset = i.offset(input);
-                    eprintln!("{:?} at position {}:", err, offset);
+                    eprintln!("{err:?} at position {offset}:");
                     eprintln!("{:>08x}: {:?}", offset, HexDump(input));
                 }
                 None
