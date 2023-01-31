@@ -37,27 +37,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     ndisasm(&code_ph.data[..], file.entry_point)?;
 
-    // println!("Dynamic entries:");
-    // if let Some(ds) = file
-    //     .program_headers
-    //     .iter()
-    //     .find(|ph| ph.r#type == delf::SegmentType::Dynamic)
-    // {
-    //     if let delf::SegmentContents::Dynamic(ref table) = ds.contents {
-    //         for entry in table {
-    //             println!("- {entry:?}");
-    //         }
-    //     }
-    // }
-
-    // println!("Rela entries:");
-    // for e in &rela_entries {
-    //     println!("{e:#?}");
-    //     if let Some(seg) = file.segment_at(e.offset) {
-    //         println!("... for {seg:#?}");
-    //     }
-    // }
-
     let rela_entries = file.read_rela_entries()?;
     let base = 0x400000_usize;
 
