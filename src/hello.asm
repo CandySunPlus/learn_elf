@@ -7,7 +7,7 @@
         section .text
 
 _start: mov rdi, 1      ; stdout fd
-        mov rsi, msg
+        lea rsi, [rel msg]
         mov rdx, 9      ; 8 chars + newline
         mov rax, 1      ; write syscall
         syscall

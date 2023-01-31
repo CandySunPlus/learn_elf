@@ -37,23 +37,36 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     ndisasm(&code_ph.data[..], file.entry_point)?;
 
+    let base = 0x400000_usize;
+
     println!("Mapping {input_path:?} in memory...");
 
     let mut mappings = Vec::new();
 
-    for ph in file
+    let phs = file
         .program_headers
         .iter()
         .filter(|ph| ph.r#type == delf::SegmentType::Load)
-    {
+        .filter(|ph| ph.mem_range().end > ph.mem_range().start);
+
+    for ph in phs {
         println!("Mapping segment @ {:?} with {:?}", ph.mem_range(), ph.flags);
         let mem_range = ph.mem_range();
         let len: usize = (mem_range.end - mem_range.start).into();
-        let addr = mem_range.start.0 as *mut u8;
+
+        let start = mem_range.start.0 as usize + base;
+        let aligned_start = align_to(start);
+        let padding = start - aligned_start;
+        let len = len + padding;
+
+        let addr = aligned_start as *mut u8;
+
+        println!("Addr: {addr:p}, Padding: {padding:08x}");
+
         let map = MemoryMap::new(len, &[MapOption::MapWritable, MapOption::MapAddr(addr)])?;
         println!("Copying segment data...");
         {
-            let dst = unsafe { std::slice::from_raw_parts_mut(addr, ph.data.len()) };
+            let dst = unsafe { std::slice::from_raw_parts_mut(addr.add(padding), ph.data.len()) };
             dst.copy_from_slice(&ph.data[..]);
         }
         println!("Adjusting permissions...");
@@ -74,11 +87,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         mappings.push(map);
     }
 
-    println!("Jumping to entry point @ {:?}...", file.entry_point);
+    let new_entry_point = (file.entry_point + base.into()).into();
+    println!("Jumping to entry point @ {new_entry_point:?}...");
+
     pause("jmp")?;
 
     unsafe {
-        jmp(file.entry_point.0 as _);
+        jmp(new_entry_point);
     }
 
     Ok(())
@@ -114,4 +129,8 @@ fn ndisasm(code: &[u8], origin: delf::Addr) -> Result<(), Box<dyn Error>> {
 unsafe fn jmp(addr: *const u8) {
     let fn_ptr: fn() = std::mem::transmute(addr);
     fn_ptr();
+}
+
+fn align_to(x: usize) -> usize {
+    x & !0xFFF
 }

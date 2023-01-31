@@ -24,6 +24,18 @@ impl Addr {
     }
 }
 
+impl From<usize> for Addr {
+    fn from(value: usize) -> Self {
+        Self(value as u64)
+    }
+}
+
+impl Into<*const u8> for Addr {
+    fn into(self) -> *const u8 {
+        self.0 as _
+    }
+}
+
 impl From<u64> for Addr {
     fn from(value: u64) -> Self {
         Self(value)
