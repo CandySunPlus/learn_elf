@@ -30,7 +30,7 @@ $(TARGET_PATH)/%-dl-pie: $(TARGET_PATH)/%.o $(TARGET_PATH)/msg.o
 	$(LD) -pie --dynamic-linker /lib/ld-linux-x86-64.so.2 -o $@ $^
 
 $(TARGET_PATH)/%-dl: $(TARGET_PATH)/%.o $(libs)
-	$(LD) -pie -rpath '$$ORIGIN' --dynamic-linker /lib/ld-linux-x86-64.so.2 -o $@ $< -lmsg -L $(TARGET_PATH)
+	$(LD) -pie -rpath '$$ORIGIN' --disable-new-dtags --dynamic-linker /lib/ld-linux-x86-64.so.2 -o $@ $< -lmsg -L $(TARGET_PATH)
 
 $(TARGET_PATH)/entry_point: $(SRC_PATH)/entry_point.c
 	$(CC) -o $@ $< 
