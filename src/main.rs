@@ -21,23 +21,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     println!("{file:#?}");
 
-    println!("Executing {input_path:?}...");
-    let status = Command::new(input_path.as_str()).status()?;
-    if !status.success() {
-        return Err("process did not exit successfully".into());
-    }
+    let rela_entries = file.read_rela_entries().unwrap_or_else(|e| {
+        println!("Could not read relocations: {e:?}");
+        Default::default()
+    });
 
-    println!("Disassembling {input_path:?}...");
-
-    let code_ph = file
-        .program_headers
-        .iter()
-        .find(|ph| ph.mem_range().contains(&file.entry_point))
-        .expect("segment with entry point not found");
-
-    ndisasm(&code_ph.data[..], file.entry_point)?;
-
-    let rela_entries = file.read_rela_entries()?;
     let base = 0x400000_usize;
 
     println!("Loading with base address @ 0x{base:x}");
@@ -138,6 +126,7 @@ fn pause(reason: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn ndisasm(code: &[u8], origin: delf::Addr) -> Result<(), Box<dyn Error>> {
     let mut child = Command::new("ndisasm")
         .arg("-b")

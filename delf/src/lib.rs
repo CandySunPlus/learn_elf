@@ -193,13 +193,16 @@ pub enum DynamicTag {
     InitArraySz,
     FiniArraySz,
     Flags = 0x1e,
-    LoOs = 0x60000000,
-    HiOs = 0x6fffffff,
     LoProc = 0x70000000,
     HiProc = 0x7fffffff,
     GnuHash = 0x6ffffef5,
     Flags1 = 0x6ffffffb,
     RelACount = 0x6ffffff9,
+    VerSym = 0x6ffffff0,
+    VerDef = 0x6ffffffc,
+    VerDefNum = 0x6ffffffd,
+    VerNeed = 0x6ffffffe,
+    VerNeedNum = 0x6fffffff,
 }
 
 #[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq, Eq)]
