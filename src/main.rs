@@ -26,6 +26,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         Default::default()
     });
 
+    println!("Found {} rela entries", rela_entries.len());
+
+    for entry in &rela_entries {
+        println!("{entry:?}");
+    }
+
     let base = 0x400000_usize;
 
     println!("Loading with base address @ 0x{base:x}");
