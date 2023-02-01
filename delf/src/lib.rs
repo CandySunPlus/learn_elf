@@ -192,6 +192,7 @@ pub enum DynamicTag {
     FiniArray,
     InitArraySz,
     FiniArraySz,
+    RUNPATH = 0x1d,
     Flags = 0x1e,
     LoProc = 0x70000000,
     HiProc = 0x7fffffff,
