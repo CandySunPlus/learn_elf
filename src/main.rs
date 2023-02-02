@@ -21,6 +21,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     println!("{file:#?}");
 
+    println!("Dyn Needed:");
+    for dyn_str in file.dynamic_entry_strings(delf::DynamicTag::Needed) {
+        println!(" => {dyn_str}");
+    }
+
+    println!("Dyn RPath:");
+    for dyn_str in file.dynamic_entry_strings(delf::DynamicTag::RPath) {
+        println!(" => {dyn_str}");
+    }
+
     let rela_entries = file.read_rela_entries().unwrap_or_else(|e| {
         println!("Could not read relocations: {e:?}");
         Default::default()
@@ -78,13 +88,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let reloc_addr = real_segment_start.add(offset_into_segment.into()) as *mut u64;
 
                     match reloc.r#type {
-                        delf::RelType::Relative => {
-                            let reloc_value = reloc.addend + base.into();
-                            *reloc_addr = reloc_value.0;
+                        delf::RelType::Known(t) => {
+                            num_relocs += 1;
+                            match t {
+                                delf::KnownRelType::Relative => {
+                                    let reloc_value = reloc.addend + base.into();
+                                    *reloc_addr = reloc_value.0;
+                                }
+                                t => {
+                                    panic!("Unsupported relocation type {t:?}");
+                                }
+                            }
                         }
-                        r#type => {
-                            panic!("Unsupported relocation type {:?}", r#type);
-                        }
+                        delf::RelType::Unknown(_) => {}
                     }
                 }
             }

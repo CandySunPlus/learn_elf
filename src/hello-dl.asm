@@ -5,7 +5,7 @@ section .text
 _start:
 mov rdi, 1
 mov rsi, msg
-mov rdx, 9
+mov rdx, 38
 mov rax, 1
 syscall
 

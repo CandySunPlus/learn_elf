@@ -8,7 +8,7 @@ use nom::{
     bytes::complete::{tag, take},
     combinator::{map, verify},
     error::context,
-    multi::{many0, many_till},
+    multi::{many_m_n, many_till},
     number::complete::{le_u16, le_u32, le_u64},
     sequence::tuple,
     Offset,
@@ -22,10 +22,22 @@ pub enum ReadRelaError {
     RelaNotFound,
     #[error("RelaSz dynamic entry not found")]
     RelaSzNotFound,
+    #[error("Rela entry not found")]
+    RelaEntNotFound,
     #[error("Rela segment not found")]
     RelaSegmentNotFound,
     #[error("Parsing error")]
     ParsingError(nom::error::VerboseErrorKind),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum GetStringError {
+    #[error("StrTab dynamic entry not found")]
+    StrTabNotFound,
+    #[error("StrTab segment not found")]
+    StrTabSegmentNotFound,
+    #[error("String not found")]
+    StringNotFound,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Add, Sub)]
@@ -43,9 +55,9 @@ impl From<usize> for Addr {
     }
 }
 
-impl Into<*const u8> for Addr {
-    fn into(self) -> *const u8 {
-        self.0 as _
+impl From<Addr> for *const u8 {
+    fn from(value: Addr) -> Self {
+        value.0 as _
     }
 }
 
@@ -208,17 +220,34 @@ pub enum DynamicTag {
 
 #[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
-pub enum RelType {
+pub enum KnownRelType {
+    _64 = 1,
+    Copy = 5,
     GlobDat = 6,
     JumpSlot = 7,
     Relative = 8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelType {
+    Known(KnownRelType),
+    Unknown(u32),
+}
+
+impl RelType {
+    pub fn parse(i: parse::Input) -> parse::Result<Self> {
+        alt((
+            map(KnownRelType::parse, Self::Known),
+            map(le_u32, Self::Unknown),
+        ))(i)
+    }
 }
 
 impl_parse_for_enum!(Type, le_u16);
 impl_parse_for_enum!(Machine, le_u16);
 impl_parse_for_enum!(SegmentType, le_u32);
 impl_parse_for_enum!(DynamicTag, le_u64);
-impl_parse_for_enum!(RelType, le_u32);
+impl_parse_for_enum!(KnownRelType, le_u32);
 impl_parse_for_enumflags!(SegmentFlag, le_u32);
 
 #[derive(Debug)]
@@ -383,13 +412,19 @@ impl File {
         let len = self
             .dynamic_entry(DynamicTag::RelaSz)
             .ok_or(ReadRelaError::RelaSzNotFound)?;
-        let seg = self
-            .segment_at(addr)
+        let ent = self
+            .dynamic_entry(DynamicTag::RelaEnt)
+            .ok_or(ReadRelaError::RelaEntNotFound)?;
+
+        let i = self
+            .slice_at(addr)
             .ok_or(ReadRelaError::RelaSegmentNotFound)?;
 
-        let i = &seg.data[(addr - seg.mem_range().start).into()..][..len.into()];
+        let i = &i[..len.into()];
 
-        match many0(Rela::parse)(i) {
+        let n = (len.0 / ent.0) as usize;
+
+        match many_m_n(n, n, Rela::parse)(i) {
             Ok((_, rela_entries)) => Ok(rela_entries),
             Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
                 let (_input, error_kind) = &err.errors[0];
@@ -426,14 +461,50 @@ impl File {
         self.program_headers.iter().find(|ph| ph.r#type == r#type)
     }
 
-    pub fn dynamic_entry(&self, tag: DynamicTag) -> Option<Addr> {
+    pub fn dynamic_table(&self) -> Option<&[DynamicEntry]> {
         match self.segment_of_type(SegmentType::Dynamic) {
             Some(ProgramHeader {
                 contents: SegmentContents::Dynamic(entries),
                 ..
-            }) => entries.iter().find(|e| e.tag == tag).map(|e| e.addr),
+            }) => Some(entries),
             _ => None,
         }
+    }
+
+    pub fn dynamic_entries(&self, tag: DynamicTag) -> impl Iterator<Item = Addr> + '_ {
+        self.dynamic_table()
+            .unwrap_or_default()
+            .iter()
+            .filter(move |e| e.tag == tag)
+            .map(|e| e.addr)
+    }
+
+    pub fn dynamic_entry(&self, tag: DynamicTag) -> Option<Addr> {
+        self.dynamic_entries(tag).next()
+    }
+
+    pub fn dynamic_entry_strings(&self, tag: DynamicTag) -> impl Iterator<Item = String> + '_ {
+        self.dynamic_entries(tag)
+            .filter_map(move |addr| self.get_string(addr).ok())
+    }
+
+    pub fn slice_at(&self, mem_addr: Addr) -> Option<&[u8]> {
+        self.segment_at(mem_addr)
+            .map(|seg| &seg.data[(mem_addr - seg.mem_range().start).into()..])
+    }
+
+    pub fn get_string(&self, offset: Addr) -> Result<String, GetStringError> {
+        let addr = self
+            .dynamic_entry(DynamicTag::StrTab)
+            .ok_or(GetStringError::StrTabNotFound)?;
+        let slice = self
+            .slice_at(addr + offset)
+            .ok_or(GetStringError::StrTabSegmentNotFound)?;
+        let string_slice = slice
+            .split(|&c| c == 0)
+            .next()
+            .ok_or(GetStringError::StringNotFound)?;
+        Ok(String::from_utf8_lossy(string_slice).into())
     }
 }
 

@@ -19,7 +19,7 @@
                     "kind": "bin"
                 }
             },
-            "args": [ "./target/release/hello" ],
+            "args": [ "./target/release/hello-dl" ],
             "cwd": "${workspaceFolder}"
         },
         {
