@@ -68,6 +68,7 @@ dependencies = [
  "delf",
  "mmap",
  "region",
+ "thiserror",
 ]
 
 [[package]]
