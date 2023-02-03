@@ -4,12 +4,13 @@ use derive_more::{Add, Sub};
 use derive_try_from_primitive::TryFromPrimitive;
 use enumflags2::{bitflags, BitFlags};
 use nom::{
+    bits,
     branch::alt,
     bytes::complete::{tag, take},
     combinator::{map, verify},
     error::context,
     multi::{many_m_n, many_till},
-    number::complete::{le_u16, le_u32, le_u64},
+    number::complete::{le_u16, le_u32, le_u64, le_u8},
     sequence::tuple,
     Offset,
 };
@@ -27,7 +28,7 @@ pub enum ReadRelaError {
     #[error("Rela segment not found")]
     RelaSegmentNotFound,
     #[error("Parsing error")]
-    ParsingError(nom::error::VerboseErrorKind),
+    ParsingError(parse::ErrorKind),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -38,6 +39,18 @@ pub enum GetStringError {
     StrTabSegmentNotFound,
     #[error("String not found")]
     StringNotFound,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ReadSymsError {
+    #[error("SymTab dynamic entry not found")]
+    SymTabNotFound,
+    #[error("SymTab section not found")]
+    SymTabSectionNotFound,
+    #[error("SymTab segment not found")]
+    SymTabSegmentNotFound,
+    #[error("Parsing error")]
+    ParsingError(parse::ErrorKind),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Add, Sub)]
@@ -123,6 +136,7 @@ pub struct File {
     pub machine: Machine,
     pub entry_point: Addr,
     pub program_headers: Vec<ProgramHeader>,
+    pub section_headers: Vec<SectionHeader>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
@@ -243,12 +257,160 @@ impl RelType {
     }
 }
 
+#[derive(Debug, Clone, Copy, TryFromPrimitive)]
+#[repr(u8)]
+pub enum SymBind {
+    Local,
+    Global,
+    Weak,
+}
+
+impl SymBind {
+    pub fn parse(i: parse::BitInput) -> parse::BitResult<Option<Self>> {
+        map(bits::complete::take(4_usize), |i: u8| {
+            Self::try_from(i).ok()
+        })(i)
+    }
+}
+
+#[derive(Debug, Clone, Copy, TryFromPrimitive)]
+#[repr(u8)]
+pub enum SymType {
+    None,
+    Object,
+    Func,
+    Section,
+}
+
+impl SymType {
+    pub fn parse(i: parse::BitInput) -> parse::BitResult<Option<Self>> {
+        map(bits::complete::take(4_usize), |i: u8| {
+            Self::try_from(i).ok()
+        })(i)
+    }
+}
+
 impl_parse_for_enum!(Type, le_u16);
 impl_parse_for_enum!(Machine, le_u16);
 impl_parse_for_enum!(SegmentType, le_u32);
 impl_parse_for_enum!(DynamicTag, le_u64);
 impl_parse_for_enum!(KnownRelType, le_u32);
 impl_parse_for_enumflags!(SegmentFlag, le_u32);
+
+#[derive(Clone, Copy)]
+pub struct SectionIndex(pub u16);
+
+impl fmt::Debug for SectionIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_special() {
+            write!(f, "Sepecial({:04x})", self.0)
+        } else if self.is_undef() {
+            write!(f, "Undef")
+        } else {
+            write!(f, "{}", self.0)
+        }
+    }
+}
+
+impl SectionIndex {
+    pub fn is_undef(&self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn is_special(&self) -> bool {
+        self.0 >= 0xff00
+    }
+
+    pub fn get(&self) -> Option<usize> {
+        if self.is_undef() || self.is_special() {
+            None
+        } else {
+            Some(self.0 as usize)
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Sym {
+    pub name: Addr,
+    pub bind: Option<SymBind>,
+    pub r#type: Option<SymType>,
+    pub shndx: SectionIndex,
+    pub value: Addr,
+    pub size: u64,
+}
+
+impl Sym {
+    pub fn parse(i: parse::Input) -> parse::Result<Self> {
+        let (i, (name, (bind, r#type), _reserved, shndx, value, size)) = tuple((
+            map(le_u32, |x| Addr(x as u64)),
+            bits(tuple((SymBind::parse, SymType::parse))),
+            le_u8,
+            map(le_u16, SectionIndex),
+            Addr::parse,
+            le_u64,
+        ))(i)?;
+
+        Ok((
+            i,
+            Self {
+                name,
+                bind,
+                r#type,
+                shndx,
+                value,
+                size,
+            },
+        ))
+    }
+}
+
+#[derive(Debug)]
+pub struct SectionHeader {
+    pub name: Addr,
+    pub r#type: u32,
+    pub flags: u64,
+    pub addr: Addr,
+    pub off: Addr,
+    pub size: Addr,
+    pub link: u32,
+    pub info: u32,
+    pub addralign: Addr,
+    pub entsize: Addr,
+}
+
+impl SectionHeader {
+    pub fn parse(i: parse::Input) -> parse::Result<Self> {
+        let (i, (name, r#type, flags, addr, off, size, link, info, addralign, entsize)) =
+            tuple((
+                map(le_u32, |x| Addr(x as u64)),
+                le_u32,
+                le_u64,
+                Addr::parse,
+                Addr::parse,
+                Addr::parse,
+                le_u32,
+                le_u32,
+                Addr::parse,
+                Addr::parse,
+            ))(i)?;
+        Ok((
+            i,
+            Self {
+                name,
+                r#type,
+                flags,
+                addr,
+                off,
+                size,
+                link,
+                info,
+                addralign,
+                entsize,
+            },
+        ))
+    }
+}
 
 #[derive(Debug)]
 pub struct Rela {
@@ -381,17 +543,25 @@ impl File {
 
         let u16_usize = |i| map(le_u16, |x| x as usize)(i);
 
-        let (i, (ph_offset, _sh_offset)) = tuple((Addr::parse, Addr::parse))(i)?;
+        let (i, (ph_offset, sh_offset)) = tuple((Addr::parse, Addr::parse))(i)?;
         let (i, (_flags, _hdr_size)) = tuple((le_u32, le_u16))(i)?;
         let (i, (ph_entsize, ph_count)) = tuple((&u16_usize, &u16_usize))(i)?;
-        let (i, (_sh_entsize, _sh_count, _sh_nidx)) =
-            tuple((&u16_usize, &u16_usize, &u16_usize))(i)?;
+        let (i, (sh_entsize, sh_count, _sh_nidx)) = tuple((&u16_usize, &u16_usize, &u16_usize))(i)?;
 
+        // Program Headers
         let ph_slices = full_input[ph_offset.into()..].chunks(ph_entsize);
         let mut program_headers = Vec::new();
         for ph_slice in ph_slices.take(ph_count) {
             let (_, ph) = ProgramHeader::parse(full_input, ph_slice)?;
             program_headers.push(ph);
+        }
+
+        // Section Headers
+        let sh_slices = full_input[sh_offset.into()..].chunks(sh_entsize);
+        let mut section_headers = Vec::new();
+        for sh_slice in sh_slices.take(sh_count) {
+            let (_, sh) = SectionHeader::parse(sh_slice)?;
+            section_headers.push(sh);
         }
 
         Ok((
@@ -401,6 +571,7 @@ impl File {
                 r#type,
                 entry_point,
                 program_headers,
+                section_headers,
             },
         ))
     }
@@ -447,6 +618,33 @@ impl File {
                 None
             }
             Err(_) => panic!("unexcpeted nom error"),
+        }
+    }
+
+    pub fn section_starting_at(&self, addr: Addr) -> Option<&SectionHeader> {
+        self.section_headers.iter().find(|sh| sh.addr == addr)
+    }
+
+    pub fn read_syms(&self) -> Result<Vec<Sym>, ReadSymsError> {
+        let addr = self
+            .dynamic_entry(DynamicTag::SymTab)
+            .ok_or(ReadSymsError::SymTabNotFound)?;
+        let section = self
+            .section_starting_at(addr)
+            .ok_or(ReadSymsError::SymTabSectionNotFound)?;
+
+        let i = self
+            .slice_at(addr)
+            .ok_or(ReadSymsError::SymTabSegmentNotFound)?;
+        let n = (section.size.0 / section.entsize.0) as usize;
+
+        match many_m_n(n, n, Sym::parse)(i) {
+            Ok((_, syms)) => Ok(syms),
+            Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
+                let (_, error_kind) = &err.errors[0];
+                Err(ReadSymsError::ParsingError(error_kind.clone()))
+            }
+            _ => unreachable!(),
         }
     }
 

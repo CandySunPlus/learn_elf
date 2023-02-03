@@ -21,16 +21,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     println!("{file:#?}");
 
-    println!("Dyn Needed:");
-    for dyn_str in file.dynamic_entry_strings(delf::DynamicTag::Needed) {
-        println!(" => {dyn_str}");
-    }
-
-    println!("Dyn RPath:");
-    for dyn_str in file.dynamic_entry_strings(delf::DynamicTag::RPath) {
-        println!(" => {dyn_str}");
-    }
-
     let rela_entries = file.read_rela_entries().unwrap_or_else(|e| {
         println!("Could not read relocations: {e:?}");
         Default::default()
@@ -41,6 +31,42 @@ fn main() -> Result<(), Box<dyn Error>> {
     for entry in &rela_entries {
         println!("{entry:?}");
     }
+
+    let syms = file.read_syms().unwrap_or_else(|e| {
+        println!("Could not read symbol tables: {e:?}");
+        Default::default()
+    });
+
+    println!(
+        "Symbol table @ {:?} contains {} entries",
+        file.dynamic_entry(delf::DynamicTag::SymTab).unwrap(),
+        syms.len()
+    );
+    println!(
+        "  {:6}{:12}{:10}{:16}{:16}{:12}{:12}",
+        "Num", "Value", "Size", "Type", "Bind", "Ndx", "Name"
+    );
+    for (num, s) in syms.iter().enumerate() {
+        println!(
+            "  {:6}{:12}{:10}{:16}{:16}{:12}{:12}",
+            format!("{}", num),
+            format!("{:?}", s.value),
+            format!("{:?}", s.size),
+            format!("{:?}", s.r#type),
+            format!("{:?}", s.bind),
+            format!("{:?}", s.shndx),
+            format!("{}", file.get_string(s.name).unwrap_or_default()),
+        );
+    }
+
+    let msg = syms
+        .iter()
+        .find(|sym| file.get_string(sym.name).unwrap_or_default() == "msg")
+        .expect("should find msg in symbol table");
+    let msg_slice = file.slice_at(msg.value).expect("shoud find msg in memory");
+    let msg_slice = &msg_slice[..msg.size as _];
+
+    println!("msg contents: {:?}", String::from_utf8_lossy(msg_slice));
 
     let base = 0x400000_usize;
 
