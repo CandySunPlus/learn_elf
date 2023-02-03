@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 delf = { path = "./delf" }
 mmap = "0.1"
-region = "2.2"
+region = "3"
 
 [profile.release]
 lto = true

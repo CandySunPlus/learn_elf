@@ -379,7 +379,7 @@ impl File {
         let (i, _) = context("Version (bits)", verify(le_u32, |&x| x == 1))(i)?;
         let (i, entry_point) = Addr::parse(i)?;
 
-        let u16_usize = map(le_u16, |x| x as usize);
+        let u16_usize = |i| map(le_u16, |x| x as usize)(i);
 
         let (i, (ph_offset, _sh_offset)) = tuple((Addr::parse, Addr::parse))(i)?;
         let (i, (_flags, _hdr_size)) = tuple((le_u32, le_u16))(i)?;
