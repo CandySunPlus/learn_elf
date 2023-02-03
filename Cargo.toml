@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+custom_debug_derive = "0.5"
 delf = { path = "./delf" }
 mmap = "0.1"
 region = "3"

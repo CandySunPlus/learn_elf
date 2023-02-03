@@ -1,7 +1,6 @@
 use std::{
     env,
     error::Error,
-    fs,
     io::Write,
     process::{Command, Stdio},
 };
@@ -9,17 +8,17 @@ use std::{
 use mmap::{MapOption, MemoryMap};
 use region::{protect, Protection};
 
+mod process;
+
 fn main() -> Result<(), Box<dyn Error>> {
     let input_path = env::args().nth(1).expect("usage: elk FILE");
-    let input = fs::read(&input_path)?;
 
     println!("Analyzing {input_path:?}...");
+    let mut proc = process::Process::new();
+    let obj = proc.load_object(input_path);
+    println!("{obj:#?}");
 
-    let file = match delf::File::parse_or_print_error(&input[..]) {
-        Some(f) => f,
-        None => std::process::exit(1),
-    };
-    println!("{file:#?}");
+    let file = &obj.file;
 
     let rela_entries = file.read_rela_entries().unwrap_or_else(|e| {
         println!("Could not read relocations: {e:?}");
@@ -49,7 +48,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (num, s) in syms.iter().enumerate() {
         println!(
             "  {:6}{:12}{:10}{:16}{:16}{:12}{:12}",
-            format!("{}", num),
+            format!("{num}"),
             format!("{:?}", s.value),
             format!("{:?}", s.size),
             format!("{:?}", s.r#type),
