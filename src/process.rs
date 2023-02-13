@@ -358,11 +358,11 @@ fn convex_hull(a: Range<delf::Addr>, b: Range<delf::Addr>) -> Range<delf::Addr> 
 }
 
 fn dump_maps(msg: &str) {
-    println!("======== MEMORY MAPS: {}", msg);
+    println!("======== MEMORY MAPS: {msg}");
     fs::read_to_string(format!("/proc/{pid}/maps", pid = process::id()))
         .unwrap()
         .lines()
         .filter(|line| line.contains("hello-dl") || line.contains("libmsg.so"))
-        .for_each(|line| println!("{}", line));
+        .for_each(|line| println!("{line}"));
     println!("=============================");
 }
