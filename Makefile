@@ -6,11 +6,10 @@ TARGET_PATH = ./target/release
 SRC_PATH = ./src
 
 
-objects := hello.o hello-dl.o msg.o nodata.o hello-rel.o
-objects := $(addprefix $(TARGET_PATH)/,$(objects))
+objects := $(wildcard $(TARGET_PATH)/*.o)
 
 no_pie_elfbins := hello nodata
-pie_elfbins := hello-dl-pie hello-pie hello-rel-pie
+pie_elfbins := hello-dl-pie hello-pie hello-rel-pie bss-pie bss2-pie bss3-pie
 shared_elfbins := hello-dl
 dynamic_libs := libmsg.so
 

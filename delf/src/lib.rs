@@ -19,12 +19,8 @@ mod parse;
 
 #[derive(thiserror::Error, Debug)]
 pub enum ReadRelaError {
-    #[error("Rela dynamic entry not found")]
-    RelaNotFound,
-    #[error("RelaSz dynamic entry not found")]
-    RelaSzNotFound,
-    #[error("Rela entry not found")]
-    RelaEntNotFound,
+    #[error("{0}")]
+    DynamicEntryNotFound(#[from] GetDynamicEntryError),
     #[error("Rela segment not found")]
     RelaSegmentNotFound,
     #[error("Parsing error")]
@@ -53,6 +49,12 @@ pub enum ReadSymsError {
     ParsingError(parse::ErrorKind),
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum GetDynamicEntryError {
+    #[error("Dynamic entry {0:?} not found")]
+    NotFound(DynamicTag),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Add, Sub)]
 pub struct Addr(pub u64);
 
@@ -76,17 +78,27 @@ impl Addr {
     pub unsafe fn as_mut_ptr<T>(&self) -> *mut T {
         std::mem::transmute(self.0 as usize)
     }
+
+    pub unsafe fn as_slice<T>(&mut self, len: usize) -> &[T] {
+        std::slice::from_raw_parts(self.as_ptr(), len)
+    }
+
+    pub unsafe fn as_mut_slice<T>(&mut self, len: usize) -> &mut [T] {
+        std::slice::from_raw_parts_mut(self.as_mut_ptr(), len)
+    }
+
+    pub unsafe fn write(&self, src: &[u8]) {
+        std::ptr::copy_nonoverlapping(src.as_ptr(), self.as_mut_ptr(), src.len())
+    }
+
+    pub unsafe fn set<T>(&self, src: T) {
+        *self.as_mut_ptr() = src;
+    }
 }
 
 impl From<usize> for Addr {
     fn from(value: usize) -> Self {
         Self(value as u64)
-    }
-}
-
-impl From<Addr> for *const u8 {
-    fn from(value: Addr) -> Self {
-        value.0 as _
     }
 }
 
@@ -104,7 +116,7 @@ impl From<Addr> for usize {
 
 impl fmt::Debug for Addr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:08x}", self.0)
+        write!(f, "{:16x}", self.0)
     }
 }
 
@@ -202,7 +214,7 @@ pub enum SegmentFlag {
     Read = 0x4,
 }
 
-#[derive(Debug, TryFromPrimitive, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, TryFromPrimitive, PartialEq, Eq)]
 #[repr(u64)]
 pub enum DynamicTag {
     Null,
@@ -248,29 +260,14 @@ pub enum DynamicTag {
     VerNeedNum = 0x6fffffff,
 }
 
-#[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, TryFromPrimitive, PartialEq, Eq)]
 #[repr(u32)]
-pub enum KnownRelType {
+pub enum RelType {
     _64 = 1,
     Copy = 5,
     GlobDat = 6,
     JumpSlot = 7,
     Relative = 8,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RelType {
-    Known(KnownRelType),
-    Unknown(u32),
-}
-
-impl RelType {
-    pub fn parse(i: parse::Input) -> parse::Result<Self> {
-        alt((
-            map(KnownRelType::parse, Self::Known),
-            map(le_u32, Self::Unknown),
-        ))(i)
-    }
 }
 
 #[derive(Debug, Clone, Copy, TryFromPrimitive)]
@@ -310,7 +307,7 @@ impl_parse_for_enum!(Type, le_u16);
 impl_parse_for_enum!(Machine, le_u16);
 impl_parse_for_enum!(SegmentType, le_u32);
 impl_parse_for_enum!(DynamicTag, le_u64);
-impl_parse_for_enum!(KnownRelType, le_u32);
+impl_parse_for_enum!(RelType, le_u32);
 impl_parse_for_enumflags!(SegmentFlag, le_u32);
 
 #[derive(Clone, Copy)]
@@ -437,6 +434,7 @@ pub struct Rela {
 }
 
 impl Rela {
+    const SIZE: usize = 24;
     fn parse(i: parse::Input) -> parse::Result<Self> {
         map(
             tuple((Addr::parse, RelType::parse, le_u32, Addr::parse)),
@@ -542,6 +540,11 @@ impl fmt::Debug for ProgramHeader {
 impl File {
     const MAGIC: &'static [u8] = &[0x7f, 0x45, 0x4c, 0x46];
 
+    pub fn get_dynamic_entry(&self, tag: DynamicTag) -> Result<Addr, GetDynamicEntryError> {
+        self.dynamic_entry(tag)
+            .ok_or(GetDynamicEntryError::NotFound(tag))
+    }
+
     pub fn parse(i: parse::Input) -> parse::Result<Self> {
         let full_input = i;
         let (i, _) = tuple((
@@ -593,31 +596,24 @@ impl File {
     }
 
     pub fn read_rela_entries(&self) -> Result<Vec<Rela>, ReadRelaError> {
-        let addr = self
-            .dynamic_entry(DynamicTag::Rela)
-            .ok_or(ReadRelaError::RelaNotFound)?;
-        let len = self
-            .dynamic_entry(DynamicTag::RelaSz)
-            .ok_or(ReadRelaError::RelaSzNotFound)?;
-        let ent = self
-            .dynamic_entry(DynamicTag::RelaEnt)
-            .ok_or(ReadRelaError::RelaEntNotFound)?;
-
-        let i = self
-            .slice_at(addr)
-            .ok_or(ReadRelaError::RelaSegmentNotFound)?;
-
-        let i = &i[..len.into()];
-
-        let n = (len.0 / ent.0) as usize;
-
-        match many_m_n(n, n, Rela::parse)(i) {
-            Ok((_, rela_entries)) => Ok(rela_entries),
-            Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
-                let (_input, error_kind) = &err.errors[0];
-                Err(ReadRelaError::ParsingError(error_kind.clone()))
+        match self.dynamic_entry(DynamicTag::Rela) {
+            None => Ok(vec![]),
+            Some(addr) => {
+                let len = self.get_dynamic_entry(DynamicTag::RelaSz)?;
+                let i = self
+                    .slice_at(addr)
+                    .ok_or(ReadRelaError::RelaSegmentNotFound)?;
+                let i = &i[..len.into()];
+                let n = len.0 as usize / Rela::SIZE;
+                match many_m_n(n, n, Rela::parse)(i) {
+                    Ok((_, rela_entries)) => Ok(rela_entries),
+                    Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
+                        let (_input, error_kind) = &err.errors[0];
+                        Err(ReadRelaError::ParsingError(error_kind.clone()))
+                    }
+                    _ => unreachable!(),
+                }
             }
-            _ => unreachable!(),
         }
     }
 

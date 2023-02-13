@@ -5,6 +5,9 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[workspace]
+members = ["delf"]
+
 [dependencies]
 custom_debug_derive = "0.5"
 delf = { path = "./delf" }
