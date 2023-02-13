@@ -23,8 +23,8 @@ pub enum ReadRelaError {
     DynamicEntryNotFound(#[from] GetDynamicEntryError),
     #[error("Rela segment not found")]
     RelaSegmentNotFound,
-    #[error("Parsing error")]
-    ParsingError(parse::ErrorKind),
+    #[error("Parsing error: {0}")]
+    ParsingError(String),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -116,7 +116,7 @@ impl From<Addr> for usize {
 
 impl fmt::Debug for Addr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:16x}", self.0)
+        write!(f, "{:016x}", self.0)
     }
 }
 
@@ -278,13 +278,7 @@ pub enum SymBind {
     Weak,
 }
 
-impl SymBind {
-    pub fn parse(i: parse::BitInput) -> parse::BitResult<Option<Self>> {
-        map(bits::complete::take(4_usize), |i: u8| {
-            Self::try_from(i).ok()
-        })(i)
-    }
-}
+impl_parse_for_bitenum!(SymBind, 4_usize);
 
 #[derive(Debug, Clone, Copy, TryFromPrimitive)]
 #[repr(u8)]
@@ -295,13 +289,7 @@ pub enum SymType {
     Section,
 }
 
-impl SymType {
-    pub fn parse(i: parse::BitInput) -> parse::BitResult<Option<Self>> {
-        map(bits::complete::take(4_usize), |i: u8| {
-            Self::try_from(i).ok()
-        })(i)
-    }
-}
+impl_parse_for_bitenum!(SymType, 4_usize);
 
 impl_parse_for_enum!(Type, le_u16);
 impl_parse_for_enum!(Machine, le_u16);
@@ -346,8 +334,8 @@ impl SectionIndex {
 #[derive(Debug)]
 pub struct Sym {
     pub name: Addr,
-    pub bind: Option<SymBind>,
-    pub r#type: Option<SymType>,
+    pub bind: SymBind,
+    pub r#type: SymType,
     pub shndx: SectionIndex,
     pub value: Addr,
     pub size: u64,
@@ -608,8 +596,7 @@ impl File {
                 match many_m_n(n, n, Rela::parse)(i) {
                     Ok((_, rela_entries)) => Ok(rela_entries),
                     Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
-                        let (_input, error_kind) = &err.errors[0];
-                        Err(ReadRelaError::ParsingError(error_kind.clone()))
+                        Err(ReadRelaError::ParsingError(format!("{:?}", err)))
                     }
                     _ => unreachable!(),
                 }

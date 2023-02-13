@@ -64,7 +64,7 @@ pub enum RelocationError {
     #[error("Unknown relocation: {0}")]
     UnknownRelocation(u32),
     #[error("Unimplemented relocation: {0:?}")]
-    UnimplementedRelocation(delf::KnownRelType),
+    UnimplementedRelocation(delf::RelType),
     #[error("Unknown symbol number: {0}")]
     UnknownSymbolNumber(u32),
     #[error("Unknown symbol: {0}")]
@@ -275,46 +275,41 @@ impl Process {
                     for rel in rels {
                         println!("Found {rel:?}");
                         match rel.r#type {
-                            delf::RelType::Known(t) => match t {
-                                delf::KnownRelType::_64 => {
-                                    let name = obj.sym_name(rel.sym)?;
-                                    println!("Looking up {name:?}");
-                                    let (lib, sym) = self
-                                        .lookup_symbol(&name, None)?
-                                        .ok_or(RelocationError::UndefinedSymbol(name))?;
-                                    println!("Found at {:?} in {:?}", sym.value, lib.path);
+                            delf::RelType::_64 => {
+                                let name = obj.sym_name(rel.sym)?;
+                                println!("Looking up {name:?}");
+                                let (lib, sym) = self
+                                    .lookup_symbol(&name, None)?
+                                    .ok_or(RelocationError::UndefinedSymbol(name))?;
+                                println!("Found at {:?} in {:?}", sym.value, lib.path);
 
-                                    let offset = obj.base + rel.offset;
-                                    let value = sym.value + lib.base + rel.addend;
+                                let offset = obj.base + rel.offset;
+                                let value = sym.value + lib.base + rel.addend;
 
-                                    println!("Value: {value:?}");
+                                println!("Value: {value:?}");
 
-                                    unsafe {
-                                        *offset.as_mut_ptr() = value.0;
-                                    }
+                                unsafe {
+                                    *offset.as_mut_ptr() = value.0;
                                 }
-                                delf::KnownRelType::Copy => {
-                                    let name = obj.sym_name(rel.sym)?;
-                                    let (lib, sym) =
-                                        self.lookup_symbol(&name, Some(obj))?.ok_or_else(|| {
-                                            RelocationError::UndefinedSymbol(name.clone())
-                                        })?;
-
-                                    unsafe {
-                                        let src = (sym.value + lib.base).as_ptr();
-                                        let dst = (rel.offset + obj.base).as_mut_ptr();
-                                        std::ptr::copy_nonoverlapping::<u8>(
-                                            src,
-                                            dst,
-                                            sym.size as usize,
-                                        );
-                                    }
-                                }
-                                _ => return Err(RelocationError::UnimplementedRelocation(t)),
-                            },
-                            delf::RelType::Unknown(num) => {
-                                return Err(RelocationError::UnknownRelocation(num))
                             }
+                            delf::RelType::Copy => {
+                                let name = obj.sym_name(rel.sym)?;
+                                let (lib, sym) =
+                                    self.lookup_symbol(&name, Some(obj))?.ok_or_else(|| {
+                                        RelocationError::UndefinedSymbol(name.clone())
+                                    })?;
+
+                                unsafe {
+                                    let src = (sym.value + lib.base).as_ptr();
+                                    let dst = (rel.offset + obj.base).as_mut_ptr();
+                                    std::ptr::copy_nonoverlapping::<u8>(
+                                        src,
+                                        dst,
+                                        sym.size as usize,
+                                    );
+                                }
+                            }
+                            _ => return Err(RelocationError::UnimplementedRelocation(rel.r#type)),
                         }
                     }
                 }
