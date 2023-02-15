@@ -5,9 +5,16 @@ use std::{
     process::{Command, Stdio},
 };
 
+mod name;
 mod process;
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() {
+    if let Err(e) = do_main() {
+        eprintln!("Fatal error: {e}");
+    }
+}
+
+fn do_main() -> Result<(), Box<dyn Error>> {
     let input_path = env::args().nth(1).expect("usage: elk FILE");
 
     println!("Analyzing {input_path:?}...");

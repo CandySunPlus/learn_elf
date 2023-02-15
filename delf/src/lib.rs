@@ -39,14 +39,14 @@ pub enum GetStringError {
 
 #[derive(thiserror::Error, Debug)]
 pub enum ReadSymsError {
-    #[error("SymTab dynamic entry not found")]
-    SymTabNotFound,
+    #[error("{0:?}")]
+    DynamicEntryNotFound(#[from] GetDynamicEntryError),
     #[error("SymTab section not found")]
     SymTabSectionNotFound,
     #[error("SymTab segment not found")]
     SymTabSegmentNotFound,
-    #[error("Parsing error")]
-    ParsingError(parse::ErrorKind),
+    #[error("Parsing error: {0}")]
+    ParsingError(String),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -79,7 +79,7 @@ impl Addr {
         std::mem::transmute(self.0 as usize)
     }
 
-    pub unsafe fn as_slice<T>(&mut self, len: usize) -> &[T] {
+    pub unsafe fn as_slice<T>(&self, len: usize) -> &[T] {
         std::slice::from_raw_parts(self.as_ptr(), len)
     }
 
@@ -331,7 +331,7 @@ impl SectionIndex {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Sym {
     pub name: Addr,
     pub bind: SymBind,
@@ -625,9 +625,8 @@ impl File {
     }
 
     pub fn read_syms(&self) -> Result<Vec<Sym>, ReadSymsError> {
-        let addr = self
-            .dynamic_entry(DynamicTag::SymTab)
-            .ok_or(ReadSymsError::SymTabNotFound)?;
+        let addr = self.get_dynamic_entry(DynamicTag::SymTab)?;
+
         let section = self
             .section_starting_at(addr)
             .ok_or(ReadSymsError::SymTabSectionNotFound)?;
@@ -640,8 +639,7 @@ impl File {
         match many_m_n(n, n, Sym::parse)(i) {
             Ok((_, syms)) => Ok(syms),
             Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
-                let (_, error_kind) = &err.errors[0];
-                Err(ReadSymsError::ParsingError(error_kind.clone()))
+                Err(ReadSymsError::ParsingError(format!("{err:?}")))
             }
             _ => unreachable!(),
         }
