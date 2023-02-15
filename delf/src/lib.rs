@@ -68,7 +68,7 @@ impl Addr {
     /// This can create dangling pointers and all sorts of eldritch
     /// errors.
     pub unsafe fn as_ptr<T>(&self) -> *const T {
-        std::mem::transmute(self.0 as usize)
+        std::mem::transmute(self.0 as usize as *const T)
     }
 
     /// # Safety
@@ -76,7 +76,7 @@ impl Addr {
     /// This can create dangling pointers and all sorts of eldritch
     /// errors.
     pub unsafe fn as_mut_ptr<T>(&self) -> *mut T {
-        std::mem::transmute(self.0 as usize)
+        std::mem::transmute(self.0 as usize as *mut T)
     }
 
     pub unsafe fn as_slice<T>(&self, len: usize) -> &[T] {

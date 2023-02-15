@@ -354,8 +354,7 @@ impl Process {
                 .objects
                 .iter()
                 .rev()
-                .map(|obj| obj.rels.iter().map(move |rel| ObjectRel { obj, rel }))
-                .flatten()
+                .flat_map(|obj| obj.rels.iter().map(move |rel| ObjectRel { obj, rel }))
                 .collect::<Vec<_>>();
             for rel in rels {
                 self.apply_relocation(rel)?;
