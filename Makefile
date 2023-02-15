@@ -16,6 +16,9 @@ dynamic_libs := libmsg.so
 elfbins := $(addprefix $(TARGET_PATH)/,$(no_pie_elfbins) $(pie_elfbins) $(shared_elfbins))
 libs := $(addprefix $(TARGET_PATH)/,$(dynamic_libs))
 
+$(TARGET_PATH):
+	mkdir -p $@
+
 $(TARGET_PATH)/%.o: $(SRC_PATH)/%.asm
 	$(NASM) -f elf64 $< -o $@ 
 
@@ -34,12 +37,11 @@ $(TARGET_PATH)/%-dl-pie: $(TARGET_PATH)/%-dl.o $(TARGET_PATH)/msg.o
 $(TARGET_PATH)/%-dl: $(TARGET_PATH)/%-dl.o
 	$(LD) -pie -rpath '$$ORIGIN' --disable-new-dtags --dynamic-linker /lib/ld-linux-x86-64.so.2 -o $@ $< -lmsg -L $(TARGET_PATH)
 
-$(TARGET_PATH)/entry_point: $(SRC_PATH)/entry_point.c
+$(TARGET_PATH)/entry_point: $(SRC_PATH)/entry_point.c | $(TARGET_PATH)
 	$(CC) -o $@ $< 
 
 .PHONY: clean all
 
-all: $(TARGET_PATH)/entry_point $(libs) $(elfbins)
-
+all: $(TARGET_PATH)/entry_point $(libs) $(elfbins) 
 clean:
 	$(RM) $(elfbins) $(libs) $(objects) $(TARGET_PATH)/entry_point
