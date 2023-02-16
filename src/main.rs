@@ -68,8 +68,41 @@ fn cmd_autosym(args: AutosymArgs) -> Result<(), Box<dyn Error>> {
                 .iter()
                 .filter(|m| m.perms.x && m.source.is_file())
                 .collect::<Vec<_>>();
+
+            fn analyze(mapping: &procfs::Mapping) -> Result<(), Box<dyn Error>> {
+                if mapping.deleted {
+                    return Ok(());
+                }
+
+                let path = match mapping.source {
+                    procfs::Source::File(path) => path,
+                    _ => return Ok(()),
+                };
+
+                println!("parse {path}");
+                let contents = std::fs::read(path)?;
+
+                let file = match delf::File::parse_or_print_error(&contents) {
+                    Some(x) => x,
+                    _ => return Ok(()),
+                };
+
+                // let section = match file
+                //     .section_headers
+                //     .iter()
+                //     .find(|&sh| file.get_section_name(&contents, sh.name).unwrap() == b".text")
+                // {
+                //     Some(section) => section,
+                //     _ => return Ok(()),
+                // };
+
+                // let textaddress = mapping.addr_range.start - mapping.offset + section.off;
+                // println!("add-symbol-file {path:?} 0x{textaddress:?}");
+
+                Ok(())
+            }
             for mapping in &xmappings {
-                println!("{mapping:?}");
+                analyze(mapping)?;
             }
         }
         Err(e) => panic!("parsing failed: {:?}", e),
