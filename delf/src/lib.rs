@@ -165,6 +165,7 @@ pub struct File {
     pub entry_point: Addr,
     pub program_headers: Vec<ProgramHeader>,
     pub section_headers: Vec<SectionHeader>,
+    pub shstrnds: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
@@ -553,7 +554,7 @@ impl File {
         let (i, (ph_offset, sh_offset)) = tuple((Addr::parse, Addr::parse))(i)?;
         let (i, (_flags, _hdr_size)) = tuple((le_u32, le_u16))(i)?;
         let (i, (ph_entsize, ph_count)) = tuple((&u16_usize, &u16_usize))(i)?;
-        let (i, (sh_entsize, sh_count, _sh_nidx)) = tuple((&u16_usize, &u16_usize, &u16_usize))(i)?;
+        let (i, (sh_entsize, sh_count, sh_nidx)) = tuple((&u16_usize, &u16_usize, &u16_usize))(i)?;
 
         // Program Headers
         let ph_slices = full_input[ph_offset.into()..].chunks(ph_entsize);
@@ -579,6 +580,7 @@ impl File {
                 entry_point,
                 program_headers,
                 section_headers,
+                shstrnds: sh_nidx,
             },
         ))
     }
@@ -700,6 +702,20 @@ impl File {
             .next()
             .ok_or(GetStringError::StringNotFound)?;
         Ok(String::from_utf8_lossy(string_slice).into())
+    }
+
+    pub fn get_section_name<'a>(
+        &self,
+        file_contents: &'a [u8],
+        offset: Addr,
+    ) -> Result<&'a [u8], GetStringError> {
+        let tab_start = self.section_headers[self.shstrnds].off + offset;
+        let tab_slice = &file_contents[tab_start.into()..];
+        let string_slice = tab_slice
+            .split(|&c| c == 0)
+            .next()
+            .ok_or(GetStringError::StringNotFound)?;
+        Ok(string_slice)
     }
 }
 

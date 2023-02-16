@@ -39,14 +39,6 @@ pub struct Object {
     pub rels: Vec<delf::Rela>,
 }
 
-impl Object {
-    // pub fn sym_name(&self, index: u32) -> Result<String, RelocationError> {
-    //     self.file
-    //         .get_string(self.syms[index as usize].name)
-    //         .map_err(|_| RelocationError::UnknownSymbolNumber(index))
-    // }
-}
-
 #[derive(Debug, Clone)]
 pub struct ObjectSym<'a> {
     obj: &'a Object,

@@ -40,8 +40,14 @@ $(TARGET_PATH)/%-dl: $(TARGET_PATH)/%-dl.o
 $(TARGET_PATH)/entry_point: $(SRC_PATH)/entry_point.c | $(TARGET_PATH)
 	$(CC) -o $@ $< 
 
+$(TARGET_PATH)/hello-nolibc: $(SRC_PATH)/hello-nolibc.c
+	$(CC) -nostartfiles -nodefaultlibs -o $@ $<
+
+$(TARGET_PATH)/ifunc-nolibc: $(SRC_PATH)/ifunc-nolibc.c
+	$(CC) -nostartfiles -nodefaultlibs -o $@ $<
+
 .PHONY: clean all
 
-all: $(TARGET_PATH)/entry_point $(libs) $(elfbins) 
+all: $(TARGET_PATH)/entry_point $(TARGET_PATH)/hello-nolibc $(TARGET_PATH)/ifunc-nolibc $(libs) $(elfbins) 
 clean:
-	$(RM) $(elfbins) $(libs) $(objects) $(TARGET_PATH)/entry_point
+	$(RM) $(elfbins) $(libs) $(objects) $(TARGET_PATH)/{entry_point,hello-nolibc,ifunc-nolibc}

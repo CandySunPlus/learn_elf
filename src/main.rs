@@ -1,12 +1,47 @@
 use std::{
-    env,
     error::Error,
     io::Write,
     process::{Command, Stdio},
 };
 
+use argh::FromArgs;
+
 mod name;
 mod process;
+mod procfs;
+
+#[derive(FromArgs, PartialEq, Debug)]
+/// Top-level command
+struct Args {
+    #[argh(subcommand)]
+    nested: SubCommand,
+}
+
+#[derive(FromArgs, PartialEq, Debug)]
+#[argh(subcommand)]
+enum SubCommand {
+    Autosym(AutosymArgs),
+    Run(RunArgs),
+}
+
+#[derive(FromArgs, PartialEq, Debug)]
+#[argh(subcommand, name = "autosym")]
+/// Given a PID, spit out GDB commands to load all .so files
+/// mapped in memory.
+struct AutosymArgs {
+    #[argh(positional)]
+    /// the PID of the process to examine
+    pid: u32,
+}
+
+#[derive(FromArgs, PartialEq, Debug)]
+#[argh(subcommand, name = "run")]
+/// Load and run an ELF execute
+struct RunArgs {
+    #[argh(positional)]
+    /// the absolute path of an executable file to load and ruin
+    exec_path: String,
+}
 
 fn main() {
     if let Err(e) = do_main() {
@@ -15,18 +50,43 @@ fn main() {
 }
 
 fn do_main() -> Result<(), Box<dyn Error>> {
-    let input_path = env::args().nth(1).expect("usage: elk FILE");
+    let args: Args = argh::from_env();
+    match args.nested {
+        SubCommand::Run(args) => cmd_run(args),
+        SubCommand::Autosym(args) => cmd_autosym(args),
+    }
+}
 
-    println!("Analyzing {input_path:?}...");
+fn cmd_autosym(args: AutosymArgs) -> Result<(), Box<dyn Error>> {
+    let maps = std::fs::read_to_string(format!("/proc/{}/maps", args.pid))?;
+
+    match procfs::mappings(&maps) {
+        Ok((_, mappings)) => {
+            println!("Found {} mappings for PID {}", mappings.len(), args.pid);
+            println!("Executable file mappings:");
+            let xmappings = mappings
+                .iter()
+                .filter(|m| m.perms.x && m.source.is_file())
+                .collect::<Vec<_>>();
+            for mapping in &xmappings {
+                println!("{mapping:?}");
+            }
+        }
+        Err(e) => panic!("parsing failed: {:?}", e),
+    }
+
+    Ok(())
+}
+
+fn cmd_run(args: RunArgs) -> Result<(), Box<dyn Error>> {
     let mut proc = process::Process::new();
-    let exec_index = proc.load_object_and_dependencies(input_path)?;
+    let exec_index = proc.load_object_and_dependencies(args.exec_path)?;
     proc.apply_relocations()?;
     proc.adjust_protections()?;
 
     let exec_obj = &proc.objects[exec_index];
     let entry_point = exec_obj.file.entry_point + exec_obj.base;
     unsafe { jmp(entry_point.as_ptr()) };
-
     Ok(())
 }
 
