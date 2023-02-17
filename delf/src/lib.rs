@@ -154,12 +154,136 @@ pub struct ProgramHeader {
     pub filesz: Addr,
     pub memsz: Addr,
     pub align: Addr,
-    pub data: Vec<u8>,
     pub contents: SegmentContents,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[repr(u32)]
+pub enum SectionType {
+    Null,
+    ProgBits,
+    SymTab,
+    StrTab,
+    Rela,
+    Hash,
+    Dynamic,
+    Note,
+    NoBits,
+    Rel,
+    ShLib,
+    DynSym,
+    InitArray = 14,
+    FiniArray,
+    PreinitArray,
+    Group,
+    SymTabShndx,
+    Num,
+    GnuAttributes = 0x6ffffff5,
+    GnuHash,
+    GnuLiblist,
+    Checksum,
+    GnuVerdef = 0x6ffffffd,
+    GnuVerneed,
+    GnuVersym,
+}
+
+impl_parse_for_enum!(SectionType, le_u32);
+
 #[derive(Debug)]
-pub struct File {
+pub struct File<I: AsRef<[u8]>> {
+    pub input: I,
+    pub contents: FileContents,
+}
+
+impl<I: AsRef<[u8]>> File<I> {
+    pub fn parse_or_print_error(input: I) -> Option<Self> {
+        match FileContents::parse(input.as_ref()) {
+            Ok((_, contents)) => Some(File { input, contents }),
+            Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
+                eprintln!("Parsing failed:");
+                for (input, err) in err.errors {
+                    let offset = input.as_ref().offset(input);
+                    eprintln!("{err:?} at position {offset}:");
+                    eprintln!("{offset:>08x}: {:?}", HexDump(input));
+                }
+                None
+            }
+            Err(_) => panic!("unexcpeted nom error"),
+        }
+    }
+
+    /// Returns a slice of the input, indexed by file offsets
+    pub fn file_slice(&self, addr: Addr, len: usize) -> &[u8] {
+        &self.input.as_ref()[addr.into()..len]
+    }
+
+    /// Returns a slice of the input corresponding to the given section
+    pub fn section_slice(&self, section: &SectionHeader) -> &[u8] {
+        self.file_slice(section.file_range().start, section.file_range().end.into())
+    }
+
+    /// Return a slice of the input corresponding to the given segment
+    pub fn segment_slice(&self, segment: &ProgramHeader) -> &[u8] {
+        self.file_slice(segment.file_range().start, segment.file_range().end.into())
+    }
+
+    /// Returns a slice of the input, indexed by virtual address
+    pub fn mem_slice(&self, addr: Addr, len: usize) -> Option<&[u8]> {
+        self.contents.segment_containing(addr).map(|segment| {
+            let start = (addr - segment.mem_range().start).into();
+            &self.segment_slice(segment)[start..start + len]
+        })
+    }
+
+    /// Return an interator of string value (or u8 slice) of dynamic entries for the given tag
+    pub fn dynamic_entry_strings(&self, tag: DynamicTag) -> impl Iterator<Item = &[u8]> {
+        self.dynamic_entries(tag)
+            .map(move |addr| self.dynstr_entry(addr))
+    }
+
+    /// Read relocation entries from the table pointed to by `DynamicTag::Rela`
+    pub fn read_rela_entries(&self) -> Result<Vec<Rela>, ReadRelaError> {
+        let addr = match self.dynamic_entry(DynamicTag::Rela) {
+            Some(addr) => addr,
+            None => return Ok(vec![]),
+        };
+
+        let len = self.get_dynamic_entry(DynamicTag::RelaSz)?;
+
+        let i = self
+            .mem_slice(addr, len.into())
+            .ok_or(ReadRelaError::RelaSegmentNotFound)?;
+
+        let n = len.0 as usize / Rela::SIZE;
+        match many_m_n(n, n, Rela::parse)(i) {
+            Ok((_, rela_entries)) => Ok(rela_entries),
+            Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
+                Err(ReadRelaError::ParsingError(format!("{:?}", err)))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn string_tab_entry(&self, name: &[u8], offset: Addr) -> &[u8] {
+        todo!()
+    }
+
+    /// Returns a null-terminated "string" from the ".dynstr" section as an u8 slice
+    pub fn dynstr_entry(&self, offset: Addr) -> &[u8] {
+        self.string_tab_entry(b".dynstr", offset)
+    }
+}
+
+impl<I: AsRef<[u8]>> std::ops::Deref for File<I> {
+    type Target = FileContents;
+
+    fn deref(&self) -> &Self::Target {
+        &self.contents
+    }
+}
+
+#[derive(Debug)]
+pub struct FileContents {
     pub r#type: Type,
     pub machine: Machine,
     pub entry_point: Addr,
@@ -292,6 +416,8 @@ pub enum SymType {
     Object,
     Func,
     Section,
+    File,
+    IFunc = 10,
 }
 
 impl_parse_for_bitenum!(SymType, 4_usize);
@@ -374,10 +500,10 @@ impl Sym {
 #[derive(Debug)]
 pub struct SectionHeader {
     pub name: Addr,
-    pub r#type: u32,
+    pub r#type: SectionType,
     pub flags: u64,
     pub addr: Addr,
-    pub off: Addr,
+    pub offset: Addr,
     pub size: Addr,
     pub link: u32,
     pub info: u32,
@@ -387,10 +513,10 @@ pub struct SectionHeader {
 
 impl SectionHeader {
     pub fn parse(i: parse::Input) -> parse::Result<Self> {
-        let (i, (name, r#type, flags, addr, off, size, link, info, addralign, entsize)) =
+        let (i, (name, r#type, flags, addr, offset, size, link, info, addralign, entsize)) =
             tuple((
                 map(le_u32, |x| Addr(x as u64)),
-                le_u32,
+                SectionType::parse,
                 le_u64,
                 Addr::parse,
                 Addr::parse,
@@ -407,7 +533,7 @@ impl SectionHeader {
                 r#type,
                 flags,
                 addr,
-                off,
+                offset,
                 size,
                 link,
                 info,
@@ -415,6 +541,16 @@ impl SectionHeader {
                 entsize,
             },
         ))
+    }
+
+    /// File range where the section is stored
+    pub fn file_range(&self) -> Range<Addr> {
+        self.offset..self.offset + self.size
+    }
+
+    /// Memory range where the section is mapped
+    pub fn mem_range(&self) -> Range<Addr> {
+        self.addr..self.addr + self.size
     }
 }
 
@@ -495,7 +631,6 @@ impl ProgramHeader {
                 filesz,
                 memsz,
                 align,
-                data: full_input[offset.into()..][..filesz.into()].to_vec(),
                 contents,
             },
         ))
@@ -530,7 +665,7 @@ impl fmt::Debug for ProgramHeader {
     }
 }
 
-impl File {
+impl FileContents {
     const MAGIC: &'static [u8] = &[0x7f, 0x45, 0x4c, 0x46];
 
     pub fn get_dynamic_entry(&self, tag: DynamicTag) -> Result<Addr, GetDynamicEntryError> {
@@ -589,43 +724,6 @@ impl File {
         ))
     }
 
-    pub fn read_rela_entries(&self) -> Result<Vec<Rela>, ReadRelaError> {
-        match self.dynamic_entry(DynamicTag::Rela) {
-            None => Ok(vec![]),
-            Some(addr) => {
-                let len = self.get_dynamic_entry(DynamicTag::RelaSz)?;
-                let i = self
-                    .slice_at(addr)
-                    .ok_or(ReadRelaError::RelaSegmentNotFound)?;
-                let i = &i[..len.into()];
-                let n = len.0 as usize / Rela::SIZE;
-                match many_m_n(n, n, Rela::parse)(i) {
-                    Ok((_, rela_entries)) => Ok(rela_entries),
-                    Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
-                        Err(ReadRelaError::ParsingError(format!("{:?}", err)))
-                    }
-                    _ => unreachable!(),
-                }
-            }
-        }
-    }
-
-    pub fn parse_or_print_error(i: parse::Input) -> Option<Self> {
-        match Self::parse(i) {
-            Ok((_, file)) => Some(file),
-            Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
-                eprintln!("Parsing failed:");
-                for (input, err) in err.errors {
-                    let offset = i.offset(input);
-                    eprintln!("{err:?} at position {offset}:");
-                    eprintln!("{:>08x}: {:?}", offset, HexDump(input));
-                }
-                None
-            }
-            Err(_) => panic!("unexcpeted nom error"),
-        }
-    }
-
     pub fn section_starting_at(&self, addr: Addr) -> Option<&SectionHeader> {
         self.section_headers.iter().find(|sh| sh.addr == addr)
     }
@@ -662,6 +760,18 @@ impl File {
         self.program_headers.iter().find(|ph| ph.r#type == r#type)
     }
 
+    pub fn section_of_type(&self, r#type: SectionType) -> Option<&SectionHeader> {
+        self.section_headers.iter().find(|sh| sh.r#type == r#type)
+    }
+
+    /// Attempts to find a Load segment whose memory range contains the given virtual address
+    pub fn segment_containing(&self, addr: Addr) -> Option<&ProgramHeader> {
+        self.program_headers
+            .iter()
+            .find(|ph| ph.r#type == SegmentType::Load && ph.mem_range().contains(&addr))
+    }
+
+    /// Attempts to find the Dynamic segment and return its entries as a slice
     pub fn dynamic_table(&self) -> Option<&[DynamicEntry]> {
         match self.segment_of_type(SegmentType::Dynamic) {
             Some(ProgramHeader {
@@ -689,11 +799,6 @@ impl File {
             .filter_map(move |addr| self.get_string(addr).ok())
     }
 
-    pub fn slice_at(&self, mem_addr: Addr) -> Option<&[u8]> {
-        self.segment_at(mem_addr)
-            .map(|seg| &seg.data[(mem_addr - seg.mem_range().start).into()..])
-    }
-
     pub fn get_string(&self, offset: Addr) -> Result<String, GetStringError> {
         let addr = self
             .dynamic_entry(DynamicTag::StrTab)
@@ -713,7 +818,7 @@ impl File {
         file_contents: &'a [u8],
         offset: Addr,
     ) -> Result<&'a [u8], GetStringError> {
-        let tab_start = self.section_headers[self.shstrnds].off + offset;
+        let tab_start = self.section_headers[self.shstrnds].offset + offset;
         let tab_slice = &file_contents[tab_start.into()..];
         let string_slice = tab_slice
             .split(|&c| c == 0)
