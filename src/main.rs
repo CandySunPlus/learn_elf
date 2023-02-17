@@ -5,6 +5,7 @@ use std::{
 };
 
 use argh::FromArgs;
+use thiserror::Error;
 
 mod name;
 mod process;
@@ -22,6 +23,7 @@ struct Args {
 enum SubCommand {
     Autosym(AutosymArgs),
     Run(RunArgs),
+    Dig(DigArgs),
 }
 
 #[derive(FromArgs, PartialEq, Debug)]
@@ -43,75 +45,107 @@ struct RunArgs {
     exec_path: String,
 }
 
+#[derive(FromArgs, PartialEq, Debug)]
+#[argh(subcommand, name = "dig")]
+/// Shows information about an addrss in a memeory's address space
+struct DigArgs {
+    #[argh(option)]
+    /// the PID of the process whose memory space to examine
+    pid: u32,
+    #[argh(option)]
+    /// the address to look for
+    addr: u64,
+}
+
 fn main() {
     if let Err(e) = do_main() {
         eprintln!("Fatal error: {e}");
     }
 }
 
-fn do_main() -> Result<(), Box<dyn Error>> {
+type AnyError = Box<dyn Error>;
+
+#[derive(Error, Debug)]
+enum WithMappingsError {
+    #[error("parsing failed: {0}")]
+    Parse(String),
+}
+
+fn do_main() -> Result<(), AnyError> {
     let args: Args = argh::from_env();
     match args.nested {
         SubCommand::Run(args) => cmd_run(args),
         SubCommand::Autosym(args) => cmd_autosym(args),
+        SubCommand::Dig(args) => cmd_dig(args),
     }
 }
 
-fn cmd_autosym(args: AutosymArgs) -> Result<(), Box<dyn Error>> {
-    let maps = std::fs::read_to_string(format!("/proc/{}/maps", args.pid))?;
-
+fn with_mappings<F, T>(pid: u32, f: F) -> Result<T, AnyError>
+where
+    F: Fn(&Vec<procfs::Mapping>) -> Result<T, AnyError>,
+{
+    let maps = std::fs::read_to_string(format!("/proc/{pid}/maps"))?;
     match procfs::mappings(&maps) {
-        Ok((_, mappings)) => {
-            println!("Found {} mappings for PID {}", mappings.len(), args.pid);
-            println!("Executable file mappings:");
-            let xmappings = mappings
-                .iter()
-                .filter(|m| m.perms.x && m.source.is_file())
-                .collect::<Vec<_>>();
+        Ok((_, maps)) => f(&maps),
+        Err(e) => Err(Box::new(WithMappingsError::Parse(format!("{e:?}")))),
+    }
+}
 
-            fn analyze(mapping: &procfs::Mapping) -> Result<(), Box<dyn Error>> {
-                if mapping.deleted {
-                    return Ok(());
-                }
+fn cmd_dig(args: DigArgs) -> Result<(), AnyError> {
+    let addr = delf::Addr(args.addr);
 
-                let path = match mapping.source {
-                    procfs::Source::File(path) => path,
-                    _ => return Ok(()),
-                };
-
-                println!("parse {path}");
-                let contents = std::fs::read(path)?;
-
-                let file = match delf::File::parse_or_print_error(&contents) {
-                    Some(x) => x,
-                    _ => return Ok(()),
-                };
-
-                // let section = match file
-                //     .section_headers
-                //     .iter()
-                //     .find(|&sh| file.get_section_name(&contents, sh.name).unwrap() == b".text")
-                // {
-                //     Some(section) => section,
-                //     _ => return Ok(()),
-                // };
-
-                // let textaddress = mapping.addr_range.start - mapping.offset + section.off;
-                // println!("add-symbol-file {path:?} 0x{textaddress:?}");
-
-                Ok(())
-            }
-            for mapping in &xmappings {
-                analyze(mapping)?;
+    with_mappings(args.pid, |mappings| {
+        for mapping in mappings {
+            if mapping.addr_range.contains(&addr) {
+                println!("Found mapping: {mapping:#?}");
+                return Ok(());
             }
         }
-        Err(e) => panic!("parsing failed: {:?}", e),
-    }
-
-    Ok(())
+        Ok(())
+    })
 }
 
-fn cmd_run(args: RunArgs) -> Result<(), Box<dyn Error>> {
+fn cmd_autosym(args: AutosymArgs) -> Result<(), AnyError> {
+    fn analyze(mapping: &procfs::Mapping) -> Result<(), AnyError> {
+        if mapping.deleted {
+            return Ok(());
+        }
+
+        let path = match mapping.source {
+            procfs::Source::File(path) => path,
+            _ => return Ok(()),
+        };
+
+        let contents = std::fs::read(path)?;
+
+        let file = match delf::File::parse_or_print_error(&contents) {
+            Some(x) => x,
+            _ => return Ok(()),
+        };
+
+        let section = match file
+            .section_headers
+            .iter()
+            .find(|&sh| file.get_section_name(&contents, sh.name).unwrap() == b".text")
+        {
+            Some(section) => section,
+            _ => return Ok(()),
+        };
+
+        let textaddress = mapping.addr_range.start - mapping.offset + section.off;
+        println!("add-symbol-file {path:?} 0x{textaddress:?}");
+
+        Ok(())
+    }
+    with_mappings(args.pid, |mappings| {
+        for mapping in mappings.iter().filter(|m| m.perms.x && m.source.is_file()) {
+            analyze(mapping)?;
+        }
+        Ok(())
+    })
+}
+
+fn cmd_run(args: RunArgs) -> Result<(), AnyError> {
     let mut proc = process::Process::new();
     let exec_index = proc.load_object_and_dependencies(args.exec_path)?;
     proc.apply_relocations()?;
@@ -124,7 +158,7 @@ fn cmd_run(args: RunArgs) -> Result<(), Box<dyn Error>> {
 }
 
 #[allow(dead_code)]
-fn pause(reason: &str) -> Result<(), Box<dyn Error>> {
+fn pause(reason: &str) -> Result<(), AnyError> {
     println!("Press enter to {reason}...");
     {
         let mut s = String::new();
@@ -134,7 +168,7 @@ fn pause(reason: &str) -> Result<(), Box<dyn Error>> {
 }
 
 #[allow(dead_code)]
-fn ndisasm(code: &[u8], origin: delf::Addr) -> Result<(), Box<dyn Error>> {
+fn ndisasm(code: &[u8], origin: delf::Addr) -> Result<(), AnyError> {
     let mut child = Command::new("ndisasm")
         .arg("-b")
         .arg("64")
