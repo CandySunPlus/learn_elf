@@ -132,7 +132,7 @@ fn cmd_autosym(args: AutosymArgs) -> Result<(), AnyError> {
             _ => return Ok(()),
         };
 
-        let textaddress = mapping.addr_range.start - mapping.offset + section.off;
+        let textaddress = mapping.addr_range.start - mapping.offset + section.offset;
         println!("add-symbol-file {path:?} 0x{textaddress:?}");
 
         Ok(())
