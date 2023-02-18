@@ -234,13 +234,13 @@ fn cmd_autosym(args: AutosymArgs) -> Result<(), AnyError> {
 fn cmd_run(args: RunArgs) -> Result<(), AnyError> {
     let mut proc = process::Process::new();
     let exec_index = proc.load_object_and_dependencies(args.exec_path)?;
+
     proc.apply_relocations()?;
     proc.adjust_protections()?;
 
     let exec_obj = &proc.objects[exec_index];
     let entry_point = exec_obj.file.entry_point + exec_obj.base;
     unsafe { jmp(entry_point.as_ptr()) };
-    Ok(())
 }
 
 #[allow(dead_code)]
@@ -273,9 +273,10 @@ fn ndisasm(code: &[u8], origin: delf::Addr) -> Result<(), AnyError> {
 }
 
 #[allow(dead_code)]
-unsafe fn jmp(addr: *const u8) {
-    let fn_ptr: fn() = std::mem::transmute(addr);
-    fn_ptr();
+unsafe fn jmp(addr: *const u8) -> ! {
+    type EntryPoint = unsafe extern "C" fn() -> !;
+    let entry_point: EntryPoint = std::mem::transmute(addr);
+    entry_point();
 }
 
 #[allow(dead_code)]

@@ -7,6 +7,7 @@ use std::{
     os::fd::AsRawFd,
     path::{Path, PathBuf},
     process,
+    sync::Arc,
 };
 
 use crate::name::Name;
@@ -18,7 +19,7 @@ use multimap::MultiMap;
 use region::{protect, Protection};
 
 #[derive(Debug, Clone)]
-struct NamedSym {
+pub struct NamedSym {
     sym: delf::Sym,
     name: Name,
 }
@@ -118,8 +119,8 @@ pub enum RelocationError {
     UnimplementedRelocation(delf::RelType),
     #[error("Unknown symbol number: {0}")]
     UnknownSymbolNumber(u32),
-    #[error("Unknown symbol: {0}")]
-    UndefinedSymbol(String),
+    #[error("Unknown symbol: {0:?}")]
+    UndefinedSymbol(NamedSym),
 }
 
 pub enum GetResult {
@@ -140,7 +141,8 @@ impl GetResult {
 #[derive(custom_debug_derive::Debug)]
 pub struct Segment {
     #[debug(skip)]
-    pub map: MemoryMap,
+    pub map: Arc<MemoryMap>,
+    pub vaddr_range: Range<delf::Addr>,
     pub padding: delf::Addr,
     pub flags: BitFlags<delf::SegmentFlag>,
 }
@@ -260,9 +262,10 @@ impl Process {
                     &[
                         MapOption::MapReadable,
                         MapOption::MapWritable,
+                        MapOption::MapExecutable,
                         MapOption::MapFd(fs_file.as_raw_fd()),
                         MapOption::MapOffset(offset.into()),
-                        MapOption::MapAddr(unsafe { (base + vaddr).as_ptr() }),
+                        MapOption::MapAddr((base + vaddr).as_ptr()),
                     ],
                 )?;
 
@@ -278,25 +281,33 @@ impl Process {
                 }
 
                 Ok(Segment {
-                    map,
+                    map: Arc::new(map),
+                    vaddr_range: vaddr..(ph.vaddr + ph.memsz),
                     padding,
                     flags: ph.flags,
                 })
             })
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?;
 
         let syms = file.read_dynsym_entries()?;
 
         let syms = if syms.is_empty() {
             vec![]
         } else {
-            let strtab = file
+            let dynstr = file
                 .get_dynamic_entry(delf::DynamicTag::StrTab)
                 .unwrap_or_else(|_| panic!("String table not found in {path:?}"));
+            let segment = segments
+                .iter()
+                .find(|seg| seg.vaddr_range.contains(&dynstr))
+                .unwrap_or_else(|| panic!("Segment not found for string table in {path:#?}"));
 
             syms.into_iter()
-                .map(|sym| unsafe {
-                    let name = Name::from_addr(base + strtab + sym.name);
+                .map(|sym| {
+                    let name = Name::mapped(
+                        &segment.map,
+                        (dynstr + sym.name - segment.vaddr_range.start).into(),
+                    );
                     NamedSym { sym, name }
                 })
                 .collect()
@@ -308,7 +319,9 @@ impl Process {
             sym_map.insert(sym.name.clone(), sym.clone())
         }
 
-        let rels = file.read_rela_entries()?;
+        let mut rels = Vec::new();
+        rels.extend(file.read_rela_entries()?);
+        rels.extend(file.read_jmp_rel_entries()?);
 
         let object = Object {
             path: path.clone(),
@@ -396,7 +409,7 @@ impl Process {
             _ => match self.lookup_symbol(&wanted, ignore_self) {
                 undef @ ResolvedSym::Undefined => match wanted.sym.sym.bind {
                     delf::SymBind::Weak => undef,
-                    _ => return Err(RelocationError::UndefinedSymbol(format!("{wanted:?}"))),
+                    _ => return Err(RelocationError::UndefinedSymbol(wanted.sym.clone())),
                 },
                 x => x,
             },
@@ -408,6 +421,11 @@ impl Process {
             },
             RelType::Relative => unsafe {
                 objrel.addr().set(obj.base + addend);
+            },
+            RelType::IRelative => unsafe {
+                type Selector = extern "C" fn() -> delf::Addr;
+                let selector: Selector = std::mem::transmute(obj.base + addend);
+                objrel.addr().set(selector());
             },
             RelType::Copy => unsafe {
                 objrel.addr().write(found.value().as_slice(found.size()));

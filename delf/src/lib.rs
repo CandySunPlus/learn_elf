@@ -63,20 +63,14 @@ impl Addr {
         map(le_u64, From::from)(i)
     }
 
-    /// # Safety
-    ///
-    /// This can create dangling pointers and all sorts of eldritch
-    /// errors.
-    pub unsafe fn as_ptr<T>(&self) -> *const T {
-        std::mem::transmute(self.0 as usize as *const T)
+    /// This can create dangling pointers and all sorts of eldritch errors.
+    pub fn as_ptr<T>(&self) -> *const T {
+        self.0 as *const T
     }
 
-    /// # Safety
-    ///
-    /// This can create dangling pointers and all sorts of eldritch
-    /// errors.
-    pub unsafe fn as_mut_ptr<T>(&self) -> *mut T {
-        std::mem::transmute(self.0 as usize as *mut T)
+    /// This can create dangling pointers and all sorts of eldritch errors.
+    pub fn as_mut_ptr<T>(&self) -> *mut T {
+        self.0 as *mut T
     }
 
     pub unsafe fn as_slice<T>(&self, len: usize) -> &[T] {
@@ -241,29 +235,6 @@ impl<I: AsRef<[u8]>> File<I> {
             .map(move |addr| self.dynstr_entry(addr))
     }
 
-    /// Read relocation entries from the table pointed to by `DynamicTag::Rela`
-    pub fn read_rela_entries(&self) -> Result<Vec<Rela>, ReadRelaError> {
-        let addr = match self.dynamic_entry(DynamicTag::Rela) {
-            Some(addr) => addr,
-            None => return Ok(vec![]),
-        };
-
-        let len = self.get_dynamic_entry(DynamicTag::RelaSz)?;
-
-        let i = self
-            .mem_slice(addr, len.into())
-            .ok_or(ReadRelaError::RelaSegmentNotFound)?;
-
-        let n = len.0 as usize / Rela::SIZE;
-        match many_m_n(n, n, Rela::parse)(i) {
-            Ok((_, rela_entries)) => Ok(rela_entries),
-            Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
-                Err(ReadRelaError::ParsingError(format!("{:?}", err)))
-            }
-            _ => unreachable!(),
-        }
-    }
-
     /// Read Symbols from the given section
     fn read_symbol_table(&self, section_type: SectionType) -> Result<Vec<Sym>, ReadSymsError> {
         let section = match self.section_of_type(section_type) {
@@ -325,6 +296,45 @@ impl<I: AsRef<[u8]>> File<I> {
     /// Returns a null-terminated "string" from the ".dynstr" section as an u8 slice
     pub fn dynstr_entry(&self, offset: Addr) -> &[u8] {
         self.string_tab_entry(b".dynstr", offset)
+    }
+
+    /// we're going to be reading relocations twice, and I don't want any
+    /// code duplication, so here's a re-usable internal helper:
+    fn read_relocations(
+        &self,
+        addr_tag: DynamicTag,
+        size_tag: DynamicTag,
+    ) -> Result<Vec<Rela>, ReadRelaError> {
+        let addr = match self.dynamic_entry(addr_tag) {
+            Some(addr) => addr,
+            None => return Ok(vec![]),
+        };
+
+        let len = self.get_dynamic_entry(size_tag)?;
+
+        let i = self
+            .mem_slice(addr, len.into())
+            .ok_or(ReadRelaError::RelaSegmentNotFound)?;
+
+        let n = len.0 as usize / Rela::SIZE;
+
+        match many_m_n(n, n, Rela::parse)(i) {
+            Ok((_, rela_entries)) => Ok(rela_entries),
+            Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
+                Err(ReadRelaError::ParsingError(format!("{err:?}")))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Read relocation entries from the table pointed to by `DynamicTag::Rela`
+    pub fn read_rela_entries(&self) -> Result<Vec<Rela>, ReadRelaError> {
+        self.read_relocations(DynamicTag::Rela, DynamicTag::RelaSz)
+    }
+
+    /// Read relocation entries from the table pointed to by `DynamicTag::JmpRel`
+    pub fn read_jmp_rel_entries(&self) -> Result<Vec<Rela>, ReadRelaError> {
+        self.read_relocations(DynamicTag::JmpRel, DynamicTag::PltRelSz)
     }
 }
 
@@ -451,6 +461,7 @@ pub enum RelType {
     GlobDat = 6,
     JumpSlot = 7,
     Relative = 8,
+    IRelative = 37,
 }
 
 #[derive(Debug, Clone, Copy, TryFromPrimitive)]
