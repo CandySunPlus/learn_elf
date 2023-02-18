@@ -264,8 +264,62 @@ impl<I: AsRef<[u8]>> File<I> {
         }
     }
 
+    /// Read Symbols from the given section
+    fn read_symbol_table(&self, section_type: SectionType) -> Result<Vec<Sym>, ReadSymsError> {
+        let section = match self.section_of_type(section_type) {
+            Some(section) => section,
+            None => return Ok(vec![]),
+        };
+
+        let i = self.section_slice(section);
+        let n = i.len() / section.entsize.0 as usize;
+
+        match many_m_n(n, n, Sym::parse)(i) {
+            Ok((_, syms)) => Ok(syms),
+            Err(nom::Err::Failure(err) | nom::Err::Error(err)) => {
+                Err(ReadSymsError::ParsingError(format!("{err:?}")))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Read symbols from the ".dynsym" section (loader view)
+    pub fn read_dynsym_entries(&self) -> Result<Vec<Sym>, ReadSymsError> {
+        self.read_symbol_table(SectionType::DynSym)
+    }
+
+    /// Read symbols from the ".symtab" section (linker view)
+    pub fn read_symtab_entries(&self) -> Result<Vec<Sym>, ReadSymsError> {
+        self.read_symbol_table(SectionType::SymTab)
+    }
+
+    /// Returns a null-terminated "string" from the ".shstrtab" section as an u8 slice
+    pub fn shstrtab_entry(&self, offset: Addr) -> &[u8] {
+        let section = &self.contents.section_headers[self.contents.shstrndx];
+        let slice = &self.section_slice(section)[offset.into()..];
+        slice.split(|&c| c == 0).next().unwrap_or_default()
+    }
+
+    /// Get a section by name
+    pub fn section_by_name(&self, name: &[u8]) -> Option<&SectionHeader> {
+        self.section_headers
+            .iter()
+            .find(|sh| self.shstrtab_entry(sh.name) == name)
+    }
+
+    /// Returns an entry from a string table contained in the section with a given name
     fn string_tab_entry(&self, name: &[u8], offset: Addr) -> &[u8] {
-        todo!()
+        self.section_by_name(name)
+            .map(|section| {
+                let slice = &self.section_slice(section)[offset.into()..];
+                slice.split(|&c| c == 0).next().unwrap_or_default()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Returns a null-terminated "string" from the ".strtab" section as an u8 slice
+    pub fn strtab_entry(&self, offset: Addr) -> &[u8] {
+        self.string_tab_entry(b".strtab", offset)
     }
 
     /// Returns a null-terminated "string" from the ".dynstr" section as an u8 slice
@@ -289,7 +343,7 @@ pub struct FileContents {
     pub entry_point: Addr,
     pub program_headers: Vec<ProgramHeader>,
     pub section_headers: Vec<SectionHeader>,
-    pub shstrnds: usize,
+    pub shstrndx: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
@@ -668,11 +722,6 @@ impl fmt::Debug for ProgramHeader {
 impl FileContents {
     const MAGIC: &'static [u8] = &[0x7f, 0x45, 0x4c, 0x46];
 
-    pub fn get_dynamic_entry(&self, tag: DynamicTag) -> Result<Addr, GetDynamicEntryError> {
-        self.dynamic_entry(tag)
-            .ok_or(GetDynamicEntryError::NotFound(tag))
-    }
-
     pub fn parse(i: parse::Input) -> parse::Result<Self> {
         let full_input = i;
         let (i, _) = tuple((
@@ -719,34 +768,13 @@ impl FileContents {
                 entry_point,
                 program_headers,
                 section_headers,
-                shstrnds: sh_nidx,
+                shstrndx: sh_nidx,
             },
         ))
     }
 
     pub fn section_starting_at(&self, addr: Addr) -> Option<&SectionHeader> {
         self.section_headers.iter().find(|sh| sh.addr == addr)
-    }
-
-    pub fn read_syms(&self) -> Result<Vec<Sym>, ReadSymsError> {
-        let addr = self.get_dynamic_entry(DynamicTag::SymTab)?;
-
-        let section = self
-            .section_starting_at(addr)
-            .ok_or(ReadSymsError::SymTabSectionNotFound)?;
-
-        let i = self
-            .slice_at(addr)
-            .ok_or(ReadSymsError::SymTabSegmentNotFound)?;
-        let n = (section.size.0 / section.entsize.0) as usize;
-
-        match many_m_n(n, n, Sym::parse)(i) {
-            Ok((_, syms)) => Ok(syms),
-            Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
-                Err(ReadSymsError::ParsingError(format!("{err:?}")))
-            }
-            _ => unreachable!(),
-        }
     }
 
     pub fn segment_at(&self, addr: Addr) -> Option<&ProgramHeader> {
@@ -782,6 +810,8 @@ impl FileContents {
         }
     }
 
+    /// Returns an iterator of all dynamic entries with the given tag.
+    /// Especially useful with DynamicTag::Needed
     pub fn dynamic_entries(&self, tag: DynamicTag) -> impl Iterator<Item = Addr> + '_ {
         self.dynamic_table()
             .unwrap_or_default()
@@ -790,41 +820,15 @@ impl FileContents {
             .map(|e| e.addr)
     }
 
+    /// Returns the value of the first dynamic entry with the given tag, or None
     pub fn dynamic_entry(&self, tag: DynamicTag) -> Option<Addr> {
         self.dynamic_entries(tag).next()
     }
 
-    pub fn dynamic_entry_strings(&self, tag: DynamicTag) -> impl Iterator<Item = String> + '_ {
-        self.dynamic_entries(tag)
-            .filter_map(move |addr| self.get_string(addr).ok())
-    }
-
-    pub fn get_string(&self, offset: Addr) -> Result<String, GetStringError> {
-        let addr = self
-            .dynamic_entry(DynamicTag::StrTab)
-            .ok_or(GetStringError::StrTabNotFound)?;
-        let slice = self
-            .slice_at(addr + offset)
-            .ok_or(GetStringError::StrTabSegmentNotFound)?;
-        let string_slice = slice
-            .split(|&c| c == 0)
-            .next()
-            .ok_or(GetStringError::StringNotFound)?;
-        Ok(String::from_utf8_lossy(string_slice).into())
-    }
-
-    pub fn get_section_name<'a>(
-        &self,
-        file_contents: &'a [u8],
-        offset: Addr,
-    ) -> Result<&'a [u8], GetStringError> {
-        let tab_start = self.section_headers[self.shstrnds].offset + offset;
-        let tab_slice = &file_contents[tab_start.into()..];
-        let string_slice = tab_slice
-            .split(|&c| c == 0)
-            .next()
-            .ok_or(GetStringError::StringNotFound)?;
-        Ok(string_slice)
+    /// Returns the value of the first dynamic entry with the given tag, or an error
+    pub fn get_dynamic_entry(&self, tag: DynamicTag) -> Result<Addr, GetDynamicEntryError> {
+        self.dynamic_entry(tag)
+            .ok_or(GetDynamicEntryError::NotFound(tag))
     }
 }
 
