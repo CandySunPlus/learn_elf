@@ -266,16 +266,6 @@ fn cmd_run(args: RunArgs) -> Result<(), AnyError> {
 }
 
 #[allow(dead_code)]
-fn pause(reason: &str) -> Result<(), AnyError> {
-    println!("Press enter to {reason}...");
-    {
-        let mut s = String::new();
-        std::io::stdin().read_line(&mut s)?;
-    }
-    Ok(())
-}
-
-#[allow(dead_code)]
 fn ndisasm(code: &[u8], origin: delf::Addr) -> Result<(), AnyError> {
     let mut child = Command::new("ndisasm")
         .arg("-b")
@@ -292,16 +282,4 @@ fn ndisasm(code: &[u8], origin: delf::Addr) -> Result<(), AnyError> {
     println!("{}", String::from_utf8_lossy(&output.stdout));
 
     Ok(())
-}
-
-#[allow(dead_code)]
-unsafe fn jmp(addr: *const u8) -> ! {
-    type EntryPoint = unsafe extern "C" fn() -> !;
-    let entry_point: EntryPoint = std::mem::transmute(addr);
-    entry_point();
-}
-
-#[allow(dead_code)]
-fn align_to(x: usize) -> usize {
-    x & !0xFFF
 }
