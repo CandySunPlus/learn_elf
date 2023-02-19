@@ -11,7 +11,7 @@ objects := $(wildcard $(TARGET_PATH)/*.o)
 no_pie_elfbins := hello nodata
 pie_elfbins := hello-dl-pie hello-pie hello-rel-pie bss-pie bss2-pie bss3-pie
 shared_elfbins := hello-dl
-dynamic_libs := libmsg.so  libfoo.so
+dynamic_libs := libmsg.so libfoo.so libbar.so
 
 nolibc_elfbins := hello-nolibc ifunc-nolibc
 example_elfbins := chimera
@@ -28,7 +28,6 @@ $(TARGET_PATH)/%.o: $(SRC_PATH)/%.asm
 $(TARGET_PATH)/%: $(TARGET_PATH)/%.o
 	$(LD) -o $@ $< 
 
-	
 $(TARGET_PATH)/lib%.so: $(TARGET_PATH)/%.o
 	$(LD) -shared -o $@ $<
 
@@ -45,13 +44,16 @@ $(TARGET_PATH)/entry_point: $(SRC_PATH)/entry_point.c | $(TARGET_PATH)
 	$(CC) -o $@ $< 
 
 $(TARGET_PATH)/%nolibc: $(SRC_PATH)/%nolibc.c
-	$(CC) -nostartfiles -nodefaultlibs -fPIC -L$(TARGET_PATH) -Wl,-rpath='$$ORIGIN' -o $@ $<
+	$(CC) -nostartfiles -nodefaultlibs -fPIC -L$(TARGET_PATH) -Wl,-rpath='$$ORIGIN' -Wl,-disable-new-dtags -o $@ $<
 
-$(TARGET_PATH)/chimera: $(SRC_PATH)/chimera.c $(TARGET_PATH)/libfoo.so
-	$(CC) -nostartfiles -nodefaultlibs -fPIC -L$(TARGET_PATH) -Wl,-rpath='$$ORIGIN' -lfoo -o $@ $<
+$(TARGET_PATH)/chimera: $(SRC_PATH)/chimera.c $(TARGET_PATH)/libfoo.so $(TARGET_PATH)/libbar.so
+	$(CC) -nostartfiles -nodefaultlibs -fPIC -L$(TARGET_PATH) -Wl,-rpath='$$ORIGIN' -Wl,-disable-new-dtags -lfoo -lbar -o $@ $<
 	
 $(TARGET_PATH)/libfoo.so: $(SRC_PATH)/foo.c
-	$(CC) -nostartfiles -nodefaultlibs -fPIC -shared -L$(TARGET_PATH) -Wl,-rpath='$$ORIGIN' -o $@ $<
+	$(CC) -nostartfiles -nodefaultlibs -fPIC -shared -L$(TARGET_PATH) -Wl,-rpath='$$ORIGIN' -Wl,-disable-new-dtags -o $@ $<
+
+$(TARGET_PATH)/libbar.so: $(SRC_PATH)/bar.c
+	$(CC) -nostartfiles -nodefaultlibs -fPIC -shared -L$(TARGET_PATH) -Wl,-rpath='$$ORIGIN' -Wl,-disable-new-dtags -o $@ $<
 
 
 

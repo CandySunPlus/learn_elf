@@ -115,8 +115,8 @@ pub enum LoadError {
 #[allow(dead_code)]
 #[derive(thiserror::Error, Debug)]
 pub enum RelocationError {
-    #[error("Unimplemented relocation: {0:?}")]
-    UnimplementedRelocation(delf::RelType),
+    #[error("{0:?}: unimplemented relocation: {1:?}")]
+    UnimplementedRelocation(PathBuf, delf::RelType),
     #[error("Unknown symbol number: {0}")]
     UnknownSymbolNumber(u32),
     #[error("Unknown symbol: {0:?}")]
@@ -430,7 +430,7 @@ impl Process {
             RelType::Copy => unsafe {
                 objrel.addr().write(found.value().as_slice(found.size()));
             },
-            _ => return Err(RelocationError::UnimplementedRelocation(reltype)),
+            RelType::GlobDat | RelType::JumpSlot => unsafe { objrel.addr().set(found.value()) },
         }
         Ok(())
     }

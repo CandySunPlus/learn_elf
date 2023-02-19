@@ -9,4 +9,9 @@ void ftl_exit(int code) {
 
 extern int number;
 
-void _start(void) { ftl_exit(number); }
+extern void change_number(void);
+
+void _start(void) {
+    change_number();
+    ftl_exit(number);
+}
