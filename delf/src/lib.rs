@@ -55,7 +55,7 @@ pub enum GetDynamicEntryError {
     NotFound(DynamicTag),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Add, Sub)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Add, Sub, Hash)]
 pub struct Addr(pub u64);
 
 impl Addr {
@@ -461,6 +461,7 @@ pub enum RelType {
     GlobDat = 6,
     JumpSlot = 7,
     Relative = 8,
+    TPOff64 = 18,
     IRelative = 37,
 }
 
@@ -482,6 +483,7 @@ pub enum SymType {
     Func,
     Section,
     File,
+    TLS = 6,
     IFunc = 10,
 }
 
