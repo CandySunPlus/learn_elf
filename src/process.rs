@@ -5,6 +5,7 @@ use std::{
     ffi::CString,
     fs,
     io::Read,
+    mem,
     ops::Range,
     os::fd::AsRawFd,
     path::{Path, PathBuf},
@@ -40,6 +41,17 @@ pub struct Object {
     sym_map: MultiMap<Name, NamedSym>,
     #[debug(skip)]
     pub rels: Vec<delf::Rela>,
+    #[debug(skip)]
+    pub initializers: Vec<delf::Addr>,
+}
+
+impl Object {
+    fn symzero(&self) -> ResolvedSym {
+        ResolvedSym::Defined(ObjectSym {
+            obj: self,
+            sym: &self.syms[0],
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -67,12 +79,32 @@ impl<'a> ResolvedSym<'a> {
             Self::Undefined => 0,
         }
     }
+
+    fn is_indirect(&self) -> bool {
+        match self {
+            Self::Undefined => false,
+            Self::Defined(sym) => matches!(sym.sym.sym.r#type, delf::SymType::IFunc),
+        }
+    }
 }
 
 impl<'a> ObjectSym<'a> {
     fn value(&self) -> delf::Addr {
-        self.obj.base + self.sym.sym.value
+        let addr = self.sym.sym.value + self.obj.base;
+        match self.sym.sym.r#type {
+            delf::SymType::IFunc => unsafe {
+                let src: extern "C" fn() -> delf::Addr = mem::transmute(addr);
+                src()
+            },
+            _ => addr,
+        }
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum RelocGroup {
+    Direct,
+    Indirect,
 }
 
 #[derive(Debug)]
@@ -345,6 +377,48 @@ impl Process<Loading> {
         }
     }
 
+    pub fn patch_libc(&self) {
+        let mut stub_map = HashMap::new();
+
+        stub_map.insert("_dl_addr", vec![0x48, 0x31, 0xc0, 0xc3]);
+
+        stub_map.insert(
+            "exit",
+            vec![0x48, 0x31, 0xff, 0xb8, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05],
+        );
+
+        let pattern = "/libc-2.";
+        let libc = match self
+            .state
+            .loader
+            .objects
+            .iter()
+            .find(|&obj| obj.path.to_string_lossy().contains(pattern))
+        {
+            Some(x) => x,
+            None => {
+                println!("Warning: could not find libc to patch!");
+                return;
+            }
+        };
+
+        for (name, instructions) in stub_map {
+            let name = Name::owned(name);
+            let sym = match libc.sym_map.get(&name) {
+                Some(sym) => ObjectSym { obj: libc, sym },
+                None => {
+                    println!("expected to find symbol {name:?} in {:?}", libc.path);
+                    continue;
+                }
+            };
+
+            println!("Patching libc function {:?} ({:?})", sym.value(), name);
+            unsafe {
+                sym.value().write(&instructions);
+            }
+        }
+    }
+
     pub fn allocate_tls(mut self) -> Process<TLSAllocated> {
         let mut offsets = HashMap::new();
         let mut storage_space = 0;
@@ -370,9 +444,10 @@ impl Process<Loading> {
 
         let tcb_addr = delf::Addr(block.as_ptr() as u64 + storage_space);
 
-        for _ in 0..storage_space {
-            block.push(0u8);
-        }
+        // for _ in 0..storage_space {
+        //     block.push(0u8);
+        // }
+        block.resize((total_size + storage_space) as _, 0u8);
 
         // Build a "somewhat fake" tcbhead structure
         block.extend(&tcb_addr.0.to_le_bytes()); // tcb
@@ -573,6 +648,22 @@ impl Process<Loading> {
         rels.extend(file.read_rela_entries()?);
         rels.extend(file.read_jmp_rel_entries()?);
 
+        let mut initializers = Vec::new();
+
+        if let Some(init) = file.dynamic_entry(delf::DynamicTag::Init) {
+            let init = init + base;
+            initializers.push(init);
+        }
+
+        if let Some(init_array) = file.dynamic_entry(delf::DynamicTag::InitArray) {
+            if let Some(init_array_sz) = file.dynamic_entry(delf::DynamicTag::InitArraySz) {
+                let init_array = base + init_array;
+                let n = init_array_sz.0 as usize / mem::size_of::<delf::Addr>();
+                let inits = unsafe { init_array.as_slice::<delf::Addr>(n) };
+                initializers.extend(inits.iter().map(|&init| init + base))
+            }
+        }
+
         let object = Object {
             path: path.clone(),
             base,
@@ -582,6 +673,7 @@ impl Process<Loading> {
             syms,
             sym_map,
             rels,
+            initializers,
         };
 
         let index = self.state.loader.objects.len();
@@ -590,54 +682,46 @@ impl Process<Loading> {
 
         Ok(index)
     }
-
-    pub fn adjust_protections(&self) -> Result<(), region::Error> {
-        for obj in &self.state.loader.objects {
-            for seg in &obj.segments {
-                let mut protection = Protection::NONE;
-                for flag in seg.flags.iter() {
-                    protection |= match flag {
-                        delf::SegmentFlag::Read => Protection::READ,
-                        delf::SegmentFlag::Write => Protection::WRITE,
-                        delf::SegmentFlag::Execute => Protection::EXECUTE,
-                    }
-                }
-                unsafe {
-                    protect(seg.map.data(), seg.map.len(), protection)?;
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 impl Process<TLSAllocated> {
     pub fn apply_relocations(self) -> Result<Process<Relocated>, RelocationError> {
         // dump_maps("before relocations");
-        for obj in self.state.loader.objects.iter().rev() {
-            println!("Applying relocations for {:?}", obj.path);
-            let rels = self
-                .state
-                .loader
-                .objects
-                .iter()
-                .rev()
-                .flat_map(|obj| obj.rels.iter().map(move |rel| ObjectRel { obj, rel }))
-                .collect::<Vec<_>>();
-            for rel in rels {
-                self.apply_relocation(rel)?;
-            }
+        let mut rels = self
+            .state
+            .loader
+            .objects
+            .iter()
+            .rev()
+            .flat_map(|obj| obj.rels.iter().map(move |rel| ObjectRel { obj, rel }))
+            .collect::<Vec<_>>();
+
+        for &group in &[RelocGroup::Direct, RelocGroup::Indirect] {
+            println!("Applying {group:?} relocations ({} left)", rels.len());
+            rels = rels
+                .into_iter()
+                .map(|objrel| self.apply_relocation(objrel, group))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect();
         }
 
-        Ok(Process {
+        let res = Process {
             state: Relocated {
                 loader: self.state.loader,
                 tls: self.state.tls,
             },
-        })
+        };
+
+        Ok(res)
     }
 
-    fn apply_relocation(&self, objrel: ObjectRel) -> Result<(), RelocationError> {
+    fn apply_relocation<'a>(
+        &self,
+        objrel: ObjectRel<'a>,
+        group: RelocGroup,
+    ) -> Result<Option<ObjectRel<'a>>, RelocationError> {
         let ObjectRel { obj, rel } = objrel;
         let reltype = rel.r#type;
         let addend = rel.addend;
@@ -650,7 +734,7 @@ impl Process<TLSAllocated> {
         let ignore_self = matches!(reltype, RelType::Copy);
 
         let found = match rel.sym {
-            0 => ResolvedSym::Undefined,
+            0 => obj.symzero(),
             _ => match self.lookup_symbol(&wanted, ignore_self) {
                 undef @ ResolvedSym::Undefined => match wanted.sym.sym.bind {
                     delf::SymBind::Weak => undef,
@@ -659,6 +743,12 @@ impl Process<TLSAllocated> {
                 x => x,
             },
         };
+
+        if let RelocGroup::Direct = group {
+            if reltype == RelType::IRelative || found.is_indirect() {
+                return Ok(Some(objrel));
+            }
+        }
 
         match reltype {
             RelType::_64 => unsafe {
@@ -699,7 +789,7 @@ impl Process<TLSAllocated> {
                 }
             },
         }
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -766,10 +856,21 @@ impl Process<Protected> {
         let exec = &self.state.loader.objects[opts.exec_index];
         let entry_point = exec.file.entry_point + exec.base;
         let stack = Self::build_stack(opts);
+        let initializers = self.initializers();
+
+        let argc = opts.args.len();
+        let mut argv = opts.args.iter().map(|x| x.as_ptr()).collect::<Vec<_>>();
+        argv.push(std::ptr::null());
+        let mut envp = opts.env.iter().map(|x| x.as_ptr()).collect::<Vec<_>>();
+        envp.push(std::ptr::null());
 
         unsafe {
-            // new!
             set_fs(self.state.tls.tcb_addr.0);
+
+            for (_, init) in initializers {
+                call_init(init, argc as _, argv.as_ptr(), envp.as_ptr());
+            }
+
             jmp(entry_point.as_ptr(), stack.as_ptr(), stack.len())
         };
     }
@@ -820,6 +921,14 @@ impl Process<Protected> {
 }
 
 impl<S: ProcessState> Process<S> {
+    fn initializers(&self) -> Vec<(&Object, delf::Addr)> {
+        let mut res = Vec::new();
+        for obj in self.state.loader().objects.iter().rev() {
+            res.extend(obj.initializers.iter().map(|&init| (obj, init)));
+        }
+        res
+    }
+
     fn lookup_symbol(&self, wanted: &ObjectSym, ignore_self: bool) -> ResolvedSym {
         for obj in &self.state.loader().objects {
             if ignore_self && std::ptr::eq(wanted.obj, obj) {
