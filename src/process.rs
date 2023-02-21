@@ -387,7 +387,7 @@ impl Process<Loading> {
             vec![0x48, 0x31, 0xff, 0xb8, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05],
         );
 
-        let pattern = "/libc-2.";
+        let pattern = "/libc.";
         let libc = match self
             .state
             .loader
