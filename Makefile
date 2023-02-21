@@ -41,7 +41,7 @@ $(TARGET_PATH)/%-dl: $(TARGET_PATH)/%-dl.o
 	$(LD) -pie -rpath '$$ORIGIN' --disable-new-dtags --dynamic-linker /lib/ld-linux-x86-64.so.2 -o $@ $< -lmsg -L $(TARGET_PATH)
 
 $(TARGET_PATH)/entry_point: $(SRC_PATH)/entry_point.c | $(TARGET_PATH)
-	$(CC) -o $@ $< 
+	$(CC) -fuse-ld=lld -o $@ $< 
 
 $(TARGET_PATH)/%nolibc: $(SRC_PATH)/%nolibc.c
 	$(CC) -nostartfiles -nodefaultlibs -fPIC -L$(TARGET_PATH) -Wl,-rpath='$$ORIGIN' -Wl,-disable-new-dtags -o $@ $<
