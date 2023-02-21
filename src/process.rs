@@ -867,8 +867,8 @@ impl Process<Protected> {
         unsafe {
             set_fs(self.state.tls.tcb_addr.0);
 
-            for (_, init) in initializers {
-                call_init(init, argc as _, argv.as_ptr(), envp.as_ptr());
+            for (_, init) in &initializers {
+                call_init(*init, argc as _, argv.as_ptr(), envp.as_ptr());
             }
 
             jmp(entry_point.as_ptr(), stack.as_ptr(), stack.len())
