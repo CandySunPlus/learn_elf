@@ -1,25 +1,22 @@
-use std::{
-    arch::asm,
-    cmp::{max, min},
-    collections::HashMap,
-    ffi::CString,
-    fs,
-    io::Read,
-    mem,
-    ops::Range,
-    os::fd::AsRawFd,
-    path::{Path, PathBuf},
-    process,
-    sync::Arc,
-};
+use std::arch::asm;
+use std::cmp::{max, min};
+use std::collections::HashMap;
+use std::ffi::CString;
+use std::io::Read;
+use std::ops::Range;
+use std::os::fd::AsRawFd;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::{fs, mem, process};
 
-use crate::name::Name;
 use custom_debug_derive::Debug as CustomDebug;
 use delf::RelType;
 use enumflags2::BitFlags;
 use mmap::{MapOption, MemoryMap};
 use multimap::MultiMap;
 use region::{protect, Protection};
+
+use crate::name::Name;
 
 #[derive(Debug, Clone)]
 pub struct NamedSym {
